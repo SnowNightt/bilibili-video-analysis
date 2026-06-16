@@ -19,8 +19,7 @@ import {
 import {
   deleteModelConfig,
   listModelConfigs,
-  saveModelConfig,
-  testModelConnection,
+  testAndSaveModelConfig,
 } from '../services/modelService'
 import { fetchVideoInfo, isValidBvidInput } from '../services/videoService'
 import type {
@@ -337,8 +336,7 @@ export function useAppState() {
   async function submitModel(draft: ModelConfigDraft) {
     state.busy = true
     try {
-      await testModelConnection(draft)
-      const saved = saveModelConfig(draft)
+      const saved = await testAndSaveModelConfig(draft)
       state.modelConfigs = [saved, ...state.modelConfigs.filter((item) => item.id !== saved.id)]
       state.showModelModal = false
       state.editingModel = null
@@ -351,13 +349,20 @@ export function useAppState() {
     }
   }
 
-  function removeModel(id: string) {
-    deleteModelConfig(id)
-    state.modelConfigs = state.modelConfigs.filter((item) => item.id !== id)
-    for (const capability of Object.keys(state.selectedModelIds) as ModelCapability[]) {
-      if (state.selectedModelIds[capability] === id) delete state.selectedModelIds[capability]
+  async function removeModel(id: string) {
+    state.busy = true
+    try {
+      await deleteModelConfig(id)
+      state.modelConfigs = state.modelConfigs.filter((item) => item.id !== id)
+      for (const capability of Object.keys(state.selectedModelIds) as ModelCapability[]) {
+        if (state.selectedModelIds[capability] === id) delete state.selectedModelIds[capability]
+      }
+      notify('模型配置已删除。', 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '模型配置删除失败。', 'warning')
+    } finally {
+      state.busy = false
     }
-    notify('模型配置已删除。', 'success')
   }
 
   async function submitQuestion() {

@@ -2,7 +2,7 @@
 
 省流看是一个本地运行的 Bilibili 视频分析工具。输入公开的 BV 号或视频地址后，可以读取视频信息、选择分析方式和模型，并查看任务进度、分析报告与历史记录。
 
-当前仓库采用轻量 monorepo 架构：`frontend/` 包含 Vue 前端，`backend/` 是后续后端开发的空目录。视频基础信息目前仍由前端直接从 Bilibili 公共接口读取，分析任务相关功能需要配套的本地后端实现。
+当前仓库采用轻量 monorepo 架构：`frontend/` 包含 Vue 前端，`backend/` 包含 NestJS 本地后端。视频基础信息目前仍由前端直接从 Bilibili 公共接口读取，模型配置、分析任务、报告和追问由本地后端提供。
 
 ## 本地启动
 
@@ -18,15 +18,16 @@ cd D:\Desktop\项目\bilibili-vedio-analyze
 pnpm install
 ```
 
-启动开发服务器：
+同时启动前端和后端开发服务器：
 
 ```powershell
 pnpm dev
 ```
 
-也可以显式启动前端：
+也可以分别启动：
 
 ```powershell
+pnpm dev:backend
 pnpm dev:frontend
 ```
 
@@ -172,7 +173,10 @@ frontend/
 ├─ package.json      前端依赖与脚本
 └─ vite.config.mjs   Vite 配置
 
-backend/             后端预留目录，当前为空
+backend/
+├─ src/              NestJS 后端源码
+├─ package.json      后端依赖与脚本
+└─ data/             本地运行数据（已忽略，不提交）
 
 package.json         monorepo 根脚本
 pnpm-workspace.yaml  pnpm workspace 配置

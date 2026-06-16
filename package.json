@@ -3,9 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "dev": "pnpm --filter @bilibili-video-analysis/frontend dev",
-    "build": "pnpm --filter @bilibili-video-analysis/frontend build",
+    "dev": "pnpm -r --parallel --filter @bilibili-video-analysis/backend --filter @bilibili-video-analysis/frontend dev",
+    "build": "pnpm --filter @bilibili-video-analysis/backend build && pnpm --filter @bilibili-video-analysis/frontend build",
     "preview": "pnpm --filter @bilibili-video-analysis/frontend preview",
+    "dev:backend": "pnpm --filter @bilibili-video-analysis/backend dev",
+    "build:backend": "pnpm --filter @bilibili-video-analysis/backend build",
+    "start:backend": "pnpm --filter @bilibili-video-analysis/backend start",
     "dev:frontend": "pnpm --filter @bilibili-video-analysis/frontend dev",
     "build:frontend": "pnpm --filter @bilibili-video-analysis/frontend build",
     "preview:frontend": "pnpm --filter @bilibili-video-analysis/frontend preview"
