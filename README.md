@@ -1,8 +1,8 @@
 # 省流看
 
-省流看是一个本地运行的 Bilibili 视频分析 Web 前端。输入公开的 BV 号或视频地址后，可以读取视频信息、选择分析方式和模型，并查看任务进度、分析报告与历史记录。
+省流看是一个本地运行的 Bilibili 视频分析工具。输入公开的 BV 号或视频地址后，可以读取视频信息、选择分析方式和模型，并查看任务进度、分析报告与历史记录。
 
-当前仓库包含 Vue 前端，不包含字幕下载、音频转写、视频处理和模型调用的后端实现。视频基础信息直接从 Bilibili 公共接口读取，分析任务相关功能需要配套的本地后端服务。
+当前仓库采用轻量 monorepo 架构：`frontend/` 包含 Vue 前端，`backend/` 是后续后端开发的空目录。视频基础信息目前仍由前端直接从 Bilibili 公共接口读取，分析任务相关功能需要配套的本地后端实现。
 
 ## 本地启动
 
@@ -24,6 +24,12 @@ pnpm install
 pnpm dev
 ```
 
+也可以显式启动前端：
+
+```powershell
+pnpm dev:frontend
+```
+
 
 ## 后端服务要求
 
@@ -40,7 +46,7 @@ pnpm dev
 | `GET` | `/api/analysis/reports/:id` | 获取结构化分析报告 |
 | `POST` | `/api/analysis/reports/:id/questions` | 基于当前报告继续追问 |
 
-请求和响应的数据结构定义在 [`src/types/domain.ts`](src/types/domain.ts)，更简短的接口说明见 [`src/services/README.md`](src/services/README.md)。
+请求和响应的数据结构定义在 [`frontend/src/types/domain.ts`](frontend/src/types/domain.ts)，更简短的接口说明见 [`frontend/src/services/README.md`](frontend/src/services/README.md)。
 
 如果没有启动后端，仍可打开前端并读取视频基础信息，但模型保存、分析任务、报告和追问功能会提示无法连接本地服务。
 
@@ -160,17 +166,16 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 ## 项目结构
 
 ```text
-src/
-├─ components/       通用界面组件和弹窗
-├─ composables/      应用状态与业务动作
-├─ constants/        页面选项、标签和状态定义
-├─ services/         视频、模型、任务和本地存储服务
-├─ types/            领域数据结构
-├─ utils/            时间和链接格式化工具
-├─ views/            新建分析、进度、历史、模型和报告页面
-├─ App.vue           应用装配
-├─ main.ts           Vue 入口
-└─ style.css         全局样式
+frontend/
+├─ src/              Vue 前端源码
+├─ index.html        前端入口 HTML
+├─ package.json      前端依赖与脚本
+└─ vite.config.mjs   Vite 配置
+
+backend/             后端预留目录，当前为空
+
+package.json         monorepo 根脚本
+pnpm-workspace.yaml  pnpm workspace 配置
 ```
 
 ## 常见问题
