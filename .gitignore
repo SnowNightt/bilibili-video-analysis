@@ -8,24 +8,26 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+**/node_modules
 .pnpm-store/
 _tmp_*
 .vite-cache
+**/.vite-cache
 .repo-git/
 dist
+**/dist
 dist-ssr
+**/dist-ssr
 *.local
 
-# Backend local runtime files
-backend/data/
-backend/temp/
-backend/app/__pycache__/
+# API local runtime files
+apps/api/data/
+apps/api/temp/
+apps/api/app/__pycache__/
 
 # Local design and verification files
 design-reference/
 design-qa.md
-frontend/src/assets/hero.png
-frontend/public/images/national-park-cover.png
 
 # Editor directories and files
 .vscode/*

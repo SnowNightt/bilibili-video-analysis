@@ -1,5 +1,5 @@
 {
-  "name": "@bilibili-video-analysis/backend",
+  "name": "@bilibili-video-analysis/api",
   "private": true,
   "version": "0.0.0",
   "scripts": {

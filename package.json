@@ -3,14 +3,14 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "dev": "pnpm -r --parallel --filter @bilibili-video-analysis/backend --filter @bilibili-video-analysis/frontend dev",
-    "build": "pnpm --filter @bilibili-video-analysis/backend build && pnpm --filter @bilibili-video-analysis/frontend build",
-    "preview": "pnpm --filter @bilibili-video-analysis/frontend preview",
-    "dev:backend": "pnpm --filter @bilibili-video-analysis/backend dev",
-    "build:backend": "pnpm --filter @bilibili-video-analysis/backend build",
-    "start:backend": "pnpm --filter @bilibili-video-analysis/backend start",
-    "dev:frontend": "pnpm --filter @bilibili-video-analysis/frontend dev",
-    "build:frontend": "pnpm --filter @bilibili-video-analysis/frontend build",
-    "preview:frontend": "pnpm --filter @bilibili-video-analysis/frontend preview"
+    "dev": "pnpm -r --parallel --filter @bilibili-video-analysis/api --filter @bilibili-video-analysis/web dev",
+    "build": "pnpm --filter @bilibili-video-analysis/api build && pnpm --filter @bilibili-video-analysis/web build",
+    "preview": "pnpm --filter @bilibili-video-analysis/web preview",
+    "dev:api": "pnpm --filter @bilibili-video-analysis/api dev",
+    "build:api": "pnpm --filter @bilibili-video-analysis/api build",
+    "start:api": "pnpm --filter @bilibili-video-analysis/api start",
+    "dev:web": "pnpm --filter @bilibili-video-analysis/web dev",
+    "build:web": "pnpm --filter @bilibili-video-analysis/web build",
+    "preview:web": "pnpm --filter @bilibili-video-analysis/web preview"
   }
 }

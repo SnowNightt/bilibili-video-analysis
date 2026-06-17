@@ -1,15 +1,32 @@
 # 省流看
 
-省流看是一个本地运行的 Bilibili 视频分析工具。输入公开的 BV 号或视频地址后，可以读取视频信息、选择分析方式和模型，并查看任务进度、分析报告与历史记录。
+省流看是一个本地运行的 Bilibili 视频分析工具。输入公开 BV 号或视频地址后，可以读取视频信息、选择分析方式和模型，并查看任务进度、分析报告与历史记录。
 
-当前仓库采用轻量 monorepo 架构：`frontend/` 包含 Vue 前端，`backend/` 包含 NestJS 本地后端。视频基础信息目前仍由前端直接从 Bilibili 公共接口读取，模型配置、分析任务、报告和追问由本地后端提供。
+当前仓库采用 monorepo 结构。Web 前端、后端 API 和后续桌面端都放在 `apps/` 下，共用代码后续放在 `packages/`。
+
+## 目录结构
+
+```text
+bilibili-video-analysis/
+├─ apps/
+│  ├─ web/          Vue Web 前端
+│  ├─ api/          NestJS 本地后端
+│  └─ desktop/      Electron 桌面端预留目录
+├─ packages/
+│  └─ shared/       共享类型和工具预留目录
+├─ docs/
+│  └─ backend-prd.md
+├─ package.json
+├─ pnpm-workspace.yaml
+└─ README.md
+```
 
 ## 本地启动
 
 进入项目目录：
 
 ```powershell
-cd D:\Desktop\项目\bilibili-vedio-analyze
+cd D:\Desktop\项目\bilibili-vedio-analyze\bilibili-video-analysis
 ```
 
 安装依赖：
@@ -18,38 +35,65 @@ cd D:\Desktop\项目\bilibili-vedio-analyze
 pnpm install
 ```
 
-同时启动前端和后端开发服务器：
+同时启动 Web 前端和后端 API：
 
 ```powershell
 pnpm dev
 ```
 
-也可以分别启动：
+分别启动：
 
 ```powershell
-pnpm dev:backend
-pnpm dev:frontend
+pnpm dev:api
+pnpm dev:web
 ```
 
+默认地址：
 
-## 后端服务要求
+```text
+Web: http://localhost:5173
+API: http://127.0.0.1:3000/api
+```
 
-前端使用相对路径访问 `/api`，因此开发环境需要将这些请求代理到本地后端，部署时也需要由同一站点转发。
+## 构建
 
-后端需要提供以下接口：
+构建全部应用：
+
+```powershell
+pnpm build
+```
+
+单独构建：
+
+```powershell
+pnpm build:api
+pnpm build:web
+```
+
+预览 Web 构建结果：
+
+```powershell
+pnpm preview
+```
+
+## 后端接口
+
+Web 前端使用相对路径访问 `/api`，开发环境由 Vite 代理到 `http://127.0.0.1:3000`。
+
+当前后端需要提供：
 
 | 方法 | 地址 | 用途 |
 |---|---|---|
-| `POST` | `/api/model-configs/test` | 测试模型地址、密钥和模型是否可用 |
+| `POST` | `/api/model-configs/test` | 测试并保存模型配置 |
+| `GET` | `/api/model-configs` | 读取模型配置 |
+| `DELETE` | `/api/model-configs/:id` | 删除模型配置 |
 | `POST` | `/api/analysis/jobs` | 创建视频分析任务 |
 | `GET` | `/api/analysis/jobs/:id` | 获取任务状态和处理进度 |
 | `POST` | `/api/analysis/jobs/:id/cancel` | 取消分析任务 |
 | `GET` | `/api/analysis/reports/:id` | 获取结构化分析报告 |
 | `POST` | `/api/analysis/reports/:id/questions` | 基于当前报告继续追问 |
 
-请求和响应的数据结构定义在 [`frontend/src/types/domain.ts`](frontend/src/types/domain.ts)，更简短的接口说明见 [`frontend/src/services/README.md`](frontend/src/services/README.md)。
-
-如果没有启动后端，仍可打开前端并读取视频基础信息，但模型保存、分析任务、报告和追问功能会提示无法连接本地服务。
+接口范围见 [后端 PRD](docs/backend-prd.md)。前端字段定义见 [apps/web/src/types/domain.ts](apps/web/src/types/domain.ts)，后端当前也保留了一份对应类型在 [apps/api/src/common/domain.ts](apps/api/src/common/domain.ts)。后续可以把公共类型迁到 `packages/shared`。
 
 ## 功能使用
 
@@ -70,17 +114,15 @@ pnpm dev:frontend
 
 模型能力分为文本总结、ASR 识别、图片理解和视频理解。不同分析模式需要不同的模型组合。
 
-保存前会调用本地后端测试连接。API Key 只发送给本地后端，前端不会把密钥写入 `localStorage`。后端应将密钥保存到操作系统凭据库或其他安全存储中。
+保存前会调用本地后端测试连接。API Key 只发送给本地后端，前端不会把密钥写入 `localStorage`。
 
 ### 2. 读取视频
 
-进入“新建分析”，输入以下任意一种内容：
+进入“新建分析”，输入 BV 号或 Bilibili 视频地址：
 
 ```text
 BV1xxxxxxxxx
 ```
-
-或：
 
 ```text
 https://www.bilibili.com/video/BV1xxxxxxxxx
@@ -94,8 +136,8 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 
 可选择两种分析模式：
 
-- **字幕优先 + ASR**：优先使用公开字幕，没有字幕时由 ASR 补全，适合访谈、课程、演讲和播客。
-- **整段视频多模态**：综合处理语音、字幕和画面，适合测评、操作演示和画面信息较多的视频。
+- **字幕优先 + ASR**：优先使用公开字幕，没有字幕时由 ASR 补全。
+- **整段视频多模态**：综合处理语音、字幕和画面。
 
 还可以设置：
 
@@ -111,15 +153,7 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 
 ### 4. 提交与取消任务
 
-点击“确认并开始分析”后，页面会再次显示本次使用的模式和模型。确认后由本地后端创建任务。
-
-“进行中”页面展示：
-
-- 当前处理阶段
-- 整体进度
-- 后端返回的状态说明
-- 失败原因
-- 取消任务入口
+点击“确认并开始分析”后，由本地后端创建任务。“进行中”页面展示当前阶段、整体进度、状态说明、失败原因和取消入口。
 
 取消操作是否同时清理视频、音频和截图缓存，由后端实现负责。
 
@@ -139,54 +173,17 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 - 导出 TXT
 - 通过浏览器打印功能导出 PDF
 
-时间戳链接会打开对应的 Bilibili 播放位置。
-
-### 6. 管理历史记录
-
-“历史报告”页面保存本机创建过的任务快照，可以按标题、BV 号和状态筛选，并支持：
-
-- 查看任务或报告
-- 使用原配置重新分析
-- 删除本地记录
-
-删除浏览器记录不会自动删除后端保存的报告、截图或媒体缓存。后端应提供相应的文件清理机制。
-
 ## 本地数据
 
-前端使用浏览器 `localStorage` 保存：
+前端使用浏览器 `localStorage` 保存非敏感界面数据。API Key 由本地后端处理，不写入浏览器本地存储。
 
-- 模型配置的非敏感信息
-- API Key 是否已经配置的状态
-- 分析任务快照
-- 历史记录索引
-
-前端不会保存 API Key 明文，也不会内置示例视频、示例模型或示例报告。
-
-清除当前站点的浏览器数据后，上述本地记录会被删除。
-
-## 项目结构
-
-```text
-frontend/
-├─ src/              Vue 前端源码
-├─ index.html        前端入口 HTML
-├─ package.json      前端依赖与脚本
-└─ vite.config.mjs   Vite 配置
-
-backend/
-├─ src/              NestJS 后端源码
-├─ package.json      后端依赖与脚本
-└─ data/             本地运行数据（已忽略，不提交）
-
-package.json         monorepo 根脚本
-pnpm-workspace.yaml  pnpm workspace 配置
-```
+后端运行数据默认保存在 `apps/api/data/`，该目录不会提交到仓库。
 
 ## 常见问题
 
 ### 页面可以打开，但模型配置无法保存
 
-模型保存前必须通过 `/api/model-configs/test` 测试。请确认本地后端已启动，并且前端的 `/api` 请求已经正确转发。
+确认后端 API 已启动，并且前端的 `/api` 请求已经正确代理到 `http://127.0.0.1:3000`。
 
 ### 读取视频时提示网络错误
 
@@ -196,22 +193,19 @@ pnpm-workspace.yaml  pnpm workspace 配置
 https://api.bilibili.com
 ```
 
-浏览器安全策略、跨域限制或 Bilibili 接口限制也可能导致读取失败。
-
-### `pnpm dev` 启动失败
-
-先检查 Node.js 是否满足版本要求，再删除依赖并重新安装：
-
-```powershell
-Remove-Item -Recurse -Force node_modules
-pnpm install
-pnpm dev
-```
-
 ### 端口 5173 已被占用
 
-指定其他端口启动：
+指定其他端口启动 Web：
 
 ```powershell
-pnpm dev -- --port 5174
+pnpm --filter @bilibili-video-analysis/web dev -- --port 5174
+```
+
+### 端口 3000 已被占用
+
+指定其他端口启动 API：
+
+```powershell
+$env:PORT=3001
+pnpm dev:api
 ```
