@@ -4,8 +4,12 @@
 
 ## 模型配置
 
+- `GET /api/model-configs`
+- 响应：`ModelConfig[]`
 - `POST /api/model-configs/test`
 - 请求体：`ModelConfigDraft`
+- 响应：`{ "ok": true, "config": ModelConfig }`
+- `DELETE /api/model-configs/:id`
 - 响应：`{ "ok": true }`
 - API Key 只在本次请求中发送给本地后端，前端存储仅保存 `apiKeyConfigured` 状态。
 

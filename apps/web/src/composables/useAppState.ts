@@ -18,6 +18,7 @@ import {
 } from '../services/analysisService'
 import {
   deleteModelConfig,
+  fetchModelConfigs,
   listModelConfigs,
   testAndSaveModelConfig,
 } from '../services/modelService'
@@ -186,6 +187,30 @@ export function useAppState() {
     }
   }
 
+  function upsertModelConfig(config: ModelConfig) {
+    state.modelConfigs = [
+      config,
+      ...state.modelConfigs
+        .filter((item) => item.id !== config.id)
+        .map((item) =>
+          config.isDefault && item.capability === config.capability
+            ? { ...item, isDefault: false }
+            : item,
+        ),
+    ]
+  }
+
+  async function refreshModelConfigs(showError = false) {
+    try {
+      state.modelConfigs = await fetchModelConfigs()
+      syncDefaultModels()
+    } catch (error) {
+      if (showError) {
+        notify(error instanceof Error ? error.message : '模型配置同步失败。', 'warning')
+      }
+    }
+  }
+
   function requestStartAnalysis() {
     syncDefaultModels()
     if (!state.currentVideo) {
@@ -337,7 +362,7 @@ export function useAppState() {
     state.busy = true
     try {
       const saved = await testAndSaveModelConfig(draft)
-      state.modelConfigs = [saved, ...state.modelConfigs.filter((item) => item.id !== saved.id)]
+      upsertModelConfig(saved)
       state.showModelModal = false
       state.editingModel = null
       syncDefaultModels()
@@ -433,8 +458,13 @@ export function useAppState() {
   })
 
   syncDefaultModels()
+  void refreshModelConfigs()
   const initialActiveJob = state.jobs.find((job) => ACTIVE_JOB_STATUSES.includes(job.status))
-  if (initialActiveJob) state.currentJob = initialActiveJob
+  if (initialActiveJob) {
+    state.currentJob = initialActiveJob
+    startPolling()
+    void refreshCurrentJob()
+  }
 
   return {
     state,
@@ -468,6 +498,7 @@ export function useAppState() {
     openModelEditor,
     submitModel,
     removeModel,
+    refreshModelConfigs,
     submitQuestion,
     exportCurrentReport,
     printCurrentReport,

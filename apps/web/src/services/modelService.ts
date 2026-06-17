@@ -8,6 +8,11 @@ export function listModelConfigs(): ModelConfig[] {
   return readCollection<ModelConfig>(STORAGE_KEY)
 }
 
+function persistModelConfigs(configs: ModelConfig[]): ModelConfig[] {
+  writeCollection(STORAGE_KEY, configs)
+  return configs
+}
+
 function persistModelConfig(config: ModelConfig): ModelConfig {
   const configs = listModelConfigs()
   const next = [
@@ -18,8 +23,13 @@ function persistModelConfig(config: ModelConfig): ModelConfig {
         config.isDefault && item.capability === config.capability ? { ...item, isDefault: false } : item,
       ),
   ]
-  writeCollection(STORAGE_KEY, next)
+  persistModelConfigs(next)
   return config
+}
+
+export async function fetchModelConfigs(): Promise<ModelConfig[]> {
+  const configs = await requestJson<ModelConfig[]>('/api/model-configs')
+  return persistModelConfigs(configs)
 }
 
 export async function deleteModelConfig(id: string): Promise<void> {

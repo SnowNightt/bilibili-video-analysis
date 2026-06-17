@@ -19,6 +19,7 @@ dist
 dist-ssr
 **/dist-ssr
 *.local
+*.tsbuildinfo
 
 # API local runtime files
 apps/api/data/
