@@ -32,6 +32,21 @@ interface CreateJobDto {
   options: AnalysisOptions;
 }
 
+interface BilibiliViewResponse {
+  code: number;
+  message: string;
+  data?: {
+    bvid: string;
+    title: string;
+    pic: string;
+    pubdate: number;
+    duration: number;
+    desc: string;
+    owner: { name: string };
+    pages: Array<{ cid: number; page: number; part: string; duration: number }>;
+  };
+}
+
 interface SubtitleItem {
   from?: number;
   to?: number;
@@ -79,6 +94,43 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+  }
+
+  async getVideoInfo(bvid: string): Promise<VideoInfo> {
+    if (!/^BV[0-9A-Za-z]{10}$/i.test(bvid)) {
+      throw new BadRequestException({ message: '请输入合法的 BV 号。' });
+    }
+
+    const normalizedBvid = bvid.trim();
+    const referer = `https://www.bilibili.com/video/${normalizedBvid}/`;
+    const response = await this.fetchJson<BilibiliViewResponse>(
+      `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(normalizedBvid)}`,
+      10000,
+      referer,
+    );
+
+    if (response.code !== 0 || !response.data) {
+      throw new BadRequestException({ message: response.message || '未能读取该视频的信息。' });
+    }
+
+    const data = response.data;
+    return {
+      bvid: data.bvid,
+      url: `https://www.bilibili.com/video/${data.bvid}`,
+      title: data.title,
+      coverUrl: data.pic.replace(/^http:/, 'https:'),
+      ownerName: data.owner.name,
+      publishedAt: new Date(data.pubdate * 1000).toLocaleString('zh-CN', { hour12: false }),
+      duration: data.duration,
+      description: data.desc,
+      isPublic: true,
+      parts: data.pages.map((part) => ({
+        cid: part.cid,
+        page: part.page,
+        title: part.part,
+        duration: part.duration,
+      })),
+    };
   }
 
   async createJob(payload: unknown): Promise<AnalysisJob> {

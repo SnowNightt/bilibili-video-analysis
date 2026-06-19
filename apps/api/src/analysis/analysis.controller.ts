@@ -5,6 +5,11 @@ import { AnalysisService } from './analysis.service';
 export class AnalysisController {
   constructor(private readonly analysis: AnalysisService) {}
 
+  @Get('videos/:bvid')
+  getVideoInfo(@Param('bvid') bvid: string) {
+    return this.analysis.getVideoInfo(bvid);
+  }
+
   @Post('jobs')
   async createJob(@Body() payload: unknown) {
     return this.analysis.createJob(payload);
