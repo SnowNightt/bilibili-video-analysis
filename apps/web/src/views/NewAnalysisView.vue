@@ -70,7 +70,11 @@ function modelsFor(capability: ModelCapability) {
     <div v-else-if="state.currentVideo" class="analysis-layout">
       <section class="video-column" aria-labelledby="video-title">
         <div class="cover-wrap">
-          <img :src="state.currentVideo.coverUrl" :alt="`${state.currentVideo.title}视频封面`" />
+          <img
+            :src="state.currentVideo.coverUrl"
+            :alt="`${state.currentVideo.title}视频封面`"
+            referrerpolicy="no-referrer"
+          />
           <span class="duration-badge">{{ formatDuration(state.currentVideo.duration) }}</span>
         </div>
         <h2 id="video-title">{{ state.currentVideo.title }}</h2>

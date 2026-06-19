@@ -30,7 +30,11 @@ const isActive = computed(() =>
 
     <template v-if="state.currentJob">
       <div class="progress-hero">
-        <img :src="state.currentJob.video.coverUrl" :alt="`${state.currentJob.video.title}视频封面`" />
+        <img
+          :src="state.currentJob.video.coverUrl"
+          :alt="`${state.currentJob.video.title}视频封面`"
+          referrerpolicy="no-referrer"
+        />
         <div>
           <span class="job-kicker">{{ state.currentJob.bvid }} · {{ app.statusLabel(state.currentJob.status) }}</span>
           <h2>{{ state.currentJob.video.title }}</h2>

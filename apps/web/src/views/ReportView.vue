@@ -18,7 +18,12 @@ const { state } = app
       <div class="report-layout">
         <aside class="report-toc"><strong>报告目录</strong><a href="#summary">一句话省流</a><a href="#overview">内容概览</a><a href="#chapters">章节时间线</a><a href="#points">核心观点</a><a href="#evidence">事实与案例</a><a href="#confidence">可信度提示</a></aside>
         <article class="report-body">
-          <img class="report-cover" :src="state.currentReport.video.coverUrl" :alt="`${state.currentReport.video.title}视频封面`" />
+          <img
+            class="report-cover"
+            :src="state.currentReport.video.coverUrl"
+            :alt="`${state.currentReport.video.title}视频封面`"
+            referrerpolicy="no-referrer"
+          />
           <section id="summary" class="report-lead"><span>一句话省流</span><h2>{{ state.currentReport.summary }}</h2></section>
           <section id="overview"><h2>内容概览</h2><p>{{ state.currentReport.overview }}</p></section>
           <section id="chapters"><h2>章节时间线</h2><ol class="chapter-list"><li v-for="chapter in state.currentReport.chapters" :key="`${chapter.startSeconds}-${chapter.title}`"><a :href="timestampUrl(state.currentReport.video.url, chapter.startSeconds)" target="_blank">{{ formatDuration(chapter.startSeconds) }}</a><div><strong>{{ chapter.title }}</strong><p>{{ chapter.summary }}</p></div></li></ol></section>
