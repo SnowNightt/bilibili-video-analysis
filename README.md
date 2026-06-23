@@ -15,7 +15,7 @@ bilibili-video-analysis/
 ├─ packages/
 │  └─ shared/       共享类型和工具预留目录
 ├─ docs/
-│  └─ backend-prd.md
+│  └─ 
 ├─ package.json
 ├─ pnpm-workspace.yaml
 └─ README.md
@@ -179,33 +179,3 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 
 后端运行数据默认保存在 `apps/api/data/`，该目录不会提交到仓库。
 
-## 常见问题
-
-### 页面可以打开，但模型配置无法保存
-
-确认后端 API 已启动，并且前端的 `/api` 请求已经正确代理到 `http://127.0.0.1:3000`。
-
-### 读取视频时提示网络错误
-
-确认输入的是公开 Bilibili 视频，并检查当前网络是否可以访问：
-
-```text
-https://api.bilibili.com
-```
-
-### 端口 5173 已被占用
-
-指定其他端口启动 Web：
-
-```powershell
-pnpm --filter @bilibili-video-analysis/web dev -- --port 5174
-```
-
-### 端口 3000 已被占用
-
-指定其他端口启动 API：
-
-```powershell
-$env:PORT=3001
-pnpm dev:api
-```
