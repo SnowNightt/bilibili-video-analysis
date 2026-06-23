@@ -47,11 +47,34 @@ interface BilibiliViewResponse {
   };
 }
 
+interface BilibiliPlayUrlResponse {
+  code: number;
+  message: string;
+  data?: {
+    dash?: {
+      audio?: Array<{
+        baseUrl?: string;
+        base_url?: string;
+        backupUrl?: string[];
+        backup_url?: string[];
+        bandwidth?: number;
+      }>;
+    };
+  };
+}
+
 interface SubtitleItem {
   from?: number;
   to?: number;
   content?: string;
 }
+
+interface DownloadedAudio {
+  bytes: Buffer;
+  fileName: string;
+}
+
+type TranscriptSource = 'none' | 'subtitle' | 'asr';
 
 class JobCancelledError extends Error {}
 
@@ -225,16 +248,20 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
 
   private async runJob(id: string): Promise<void> {
     let transcript = '';
+    let transcriptSource: TranscriptSource = 'none';
     try {
       const job = this.getJob(id);
       await this.advance(id, 'fetching_video', 8, `正在确认 ${job.bvid} 的视频信息。`);
 
       await this.advance(id, 'fetching_subtitle', 18, '正在尝试读取 Bilibili 公开字幕。');
       transcript = await this.fetchPublicSubtitles(job);
+      if (transcript) transcriptSource = 'subtitle';
 
       if (job.options.mode === 'subtitle' && !transcript) {
         await this.advance(id, 'extracting_audio', 34, '未找到公开字幕，正在准备音频转写链路。');
         await this.advance(id, 'transcribing', 52, '正在调用 ASR 模型转写音频。');
+        transcript = await this.transcribeSelectedParts(this.getJob(id));
+        transcriptSource = 'asr';
       }
 
       if (job.options.mode === 'multimodal') {
@@ -246,7 +273,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       }
 
       await this.advance(id, 'analyzing', 82, '正在调用模型生成结构化分析。');
-      const report = await this.generateReport(this.getJob(id), transcript);
+      const report = await this.generateReport(this.getJob(id), transcript, transcriptSource);
 
       await this.advance(id, 'generating_report', 94, '正在保存结构化报告。');
       this.reports.set(report.id, report);
@@ -329,7 +356,66 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     return chunks.join('\n\n').slice(0, 12000);
   }
 
-  private async generateReport(job: AnalysisJob, transcript: string): Promise<AnalysisReport> {
+  private async transcribeSelectedParts(job: AnalysisJob): Promise<string> {
+    const asrProfileId = job.options.modelProfileIds.asr;
+    if (!asrProfileId) throw new BadRequestException({ message: '缺少 ASR 模型配置。' });
+    const { config, apiKey } = await this.modelConfigs.getConfigWithApiKey(asrProfileId, 'asr');
+    const selected = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
+    const chunks: string[] = [];
+
+    for (const part of selected) {
+      this.ensureActive(this.getJob(job.id));
+      const audio = await this.downloadPartAudio(job, part);
+      this.ensureActive(this.getJob(job.id));
+      let text: string;
+      try {
+        text = await this.client.transcribe(config, apiKey, audio.bytes, audio.fileName);
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : 'ASR 模型转写失败。';
+        throw new Error(`P${part.page} ASR 转写失败：${message}`);
+      }
+      if (text.trim()) chunks.push(`P${part.page} ${part.title}\n${text.trim()}`);
+    }
+
+    if (!chunks.length) throw new Error('未找到公开字幕，且 ASR 未返回有效转写内容。');
+    return chunks.join('\n\n').slice(0, 12000);
+  }
+
+  private async downloadPartAudio(job: AnalysisJob, part: VideoPart): Promise<DownloadedAudio> {
+    const playUrl = await this.fetchJson<BilibiliPlayUrlResponse>(
+      `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(job.bvid)}&cid=${encodeURIComponent(String(part.cid))}&fnval=16&fourk=0`,
+      8000,
+      job.video.url,
+    );
+    if (playUrl.code !== 0) {
+      throw new Error(playUrl.message || 'Bilibili 音频地址获取失败。');
+    }
+
+    const audioItems = playUrl.data?.dash?.audio ?? [];
+    const audioUrl = audioItems
+      .slice()
+      .sort((a, b) => Number(b.bandwidth ?? 0) - Number(a.bandwidth ?? 0))
+      .flatMap((item) => [
+        item.baseUrl,
+        item.base_url,
+        ...(item.backupUrl ?? []),
+        ...(item.backup_url ?? []),
+      ])
+      .find((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url));
+    if (!audioUrl) throw new Error('未能获取该视频分 P 的公开音频流。');
+
+    const bytes = await this.fetchBinary(audioUrl, 50 * 1024 * 1024, job.video.url);
+    return {
+      bytes,
+      fileName: `${job.bvid}-p${part.page}.m4a`,
+    };
+  }
+
+  private async generateReport(
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+  ): Promise<AnalysisReport> {
     const capability: ModelCapability = job.options.mode === 'multimodal' ? 'video' : 'text';
     const profileId = job.options.modelProfileIds[capability];
     if (!profileId) throw new BadRequestException({ message: '缺少当前分析模式需要的模型配置。' });
@@ -348,7 +434,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
           },
           {
             role: 'user',
-            content: this.reportPrompt(job, transcript),
+            content: this.reportPrompt(job, transcript, transcriptSource),
           },
         ],
         {
@@ -367,10 +453,10 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return this.normalizeReport(modelJson, job, transcript);
+    return this.normalizeReport(modelJson, job, transcript, transcriptSource);
   }
 
-  private reportPrompt(job: AnalysisJob, transcript: string): string {
+  private reportPrompt(job: AnalysisJob, transcript: string, transcriptSource: TranscriptSource): string {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
     return [
       `输出语言：${job.options.outputLanguage}`,
@@ -379,16 +465,24 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `是否保留时间戳：${job.options.keepTimestamps}`,
       `视频信息：${JSON.stringify(job.video)}`,
       `选择分 P：${JSON.stringify(selectedParts)}`,
+      `内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}`,
       `可用字幕或转写上下文：${transcript || '未读取到公开字幕。请只基于已提供元数据生成保守报告。'}`,
+      '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters, keyPoints, facts 和 conclusion；不要只复述标题、简介或分 P 信息。',
       '请返回 JSON，字段必须包含 summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
       'chapters/recommendedSegments 的元素字段为 title, startSeconds, summary；keyPoints 元素字段为 title, detail；screenshots 元素字段为 url, timestampSeconds, description。',
     ].join('\n\n');
   }
 
-  private normalizeReport(value: unknown, job: AnalysisJob, transcript: string): AnalysisReport {
-    const fallback = this.fallbackReport(job, transcript);
+  private normalizeReport(
+    value: unknown,
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+  ): AnalysisReport {
+    const fallback = this.fallbackReport(job, transcript, transcriptSource);
     if (!value || typeof value !== 'object') return fallback;
     const source = value as Partial<AnalysisReport>;
+    const confidenceNotes = this.textOr(source.confidenceNotes, fallback.confidenceNotes);
     return {
       ...fallback,
       summary: this.textOr(source.summary, fallback.summary),
@@ -399,28 +493,35 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       conclusion: this.textOr(source.conclusion, fallback.conclusion),
       screenshots: this.screenshotsOr(source.screenshots, fallback.screenshots),
       recommendedSegments: this.chaptersOr(source.recommendedSegments, fallback.recommendedSegments),
-      confidenceNotes: this.textOr(source.confidenceNotes, fallback.confidenceNotes),
+      confidenceNotes: this.withEvidenceNote(confidenceNotes, transcript, transcriptSource),
     };
   }
 
-  private fallbackReport(job: AnalysisJob, transcript: string): AnalysisReport {
+  private fallbackReport(
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+  ): AnalysisReport {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
     const chapters = this.fallbackChapters(selectedParts.length ? selectedParts : job.video.parts, job.options);
     const hasTranscript = Boolean(transcript.trim());
+    const evidence = this.transcriptExcerpt(transcript);
+    const sourceLabel = this.transcriptSourceLabel(transcriptSource);
     return {
       id: randomUUID(),
       jobId: job.id,
       video: job.video,
       createdAt: new Date().toISOString(),
-      summary: `《${job.video.title}》的分析已完成，报告基于视频元数据${hasTranscript ? '和公开字幕' : ''}生成。`,
-      overview:
-        job.video.description?.trim() ||
-        `该视频由 ${job.video.ownerName} 发布，时长约 ${Math.round(job.video.duration / 60)} 分钟。`,
+      summary: `《${job.video.title}》的分析已完成，报告基于视频元数据${hasTranscript ? `和${sourceLabel}` : ''}生成。`,
+      overview: evidence
+        ? `已取得${sourceLabel}，但模型没有返回可解析的结构化 JSON。以下为内容上下文片段：\n${evidence}`
+        : job.video.description?.trim() ||
+          `该视频由 ${job.video.ownerName} 发布，时长约 ${Math.round(job.video.duration / 60)} 分钟。`,
       chapters,
       keyPoints: [
         {
-          title: '内容主题',
-          detail: `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
+          title: hasTranscript ? '内容上下文' : '内容主题',
+          detail: evidence || `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
         },
         {
           title: '处理范围',
@@ -432,14 +533,30 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
         `视频 BV 号：${job.video.bvid}`,
         `视频总时长：${job.video.duration} 秒`,
         `已选择分 P：${selectedParts.map((part) => `P${part.page} ${part.title}`).join('、')}`,
+        hasTranscript ? `内容上下文来源：${sourceLabel}，长度 ${transcript.length} 字符。` : '',
       ].filter(Boolean),
       conclusion: '当前报告未从视频内容中提取到明确的作者结论或立场，请结合原视频核对。',
       screenshots: this.fallbackScreenshots(job),
       recommendedSegments: chapters.slice(0, Math.min(3, chapters.length)),
       confidenceNotes: hasTranscript
-        ? '报告基于视频元数据和可读取的公开字幕生成；未能验证画面细节和字幕以外的信息。'
+        ? `报告基于视频元数据和${sourceLabel}生成；模型结构化输出不可解析时会保留上下文片段作为证据。未能验证画面细节。`
         : '未读取到公开字幕或真实媒体内容，报告主要基于视频元数据和分 P 信息生成；具体观点需以原视频为准。',
     };
+  }
+
+  private withEvidenceNote(note: string, transcript: string, transcriptSource: TranscriptSource): string {
+    if (!transcript.trim()) return note;
+    return `${note}\n\n内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}，长度 ${transcript.length} 字符。`;
+  }
+
+  private transcriptSourceLabel(source: TranscriptSource): string {
+    if (source === 'asr') return 'ASR 音频转写';
+    if (source === 'subtitle') return 'Bilibili 公开字幕';
+    return '无';
+  }
+
+  private transcriptExcerpt(transcript: string): string {
+    return transcript.trim().replace(/\s+/g, ' ').slice(0, 1200);
   }
 
   private fallbackChapters(parts: VideoPart[], options: AnalysisOptions): ReportChapter[] {
@@ -612,6 +729,32 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       const text = await response.text();
       if (text.length > 2_000_000) throw new Error('response too large');
       return JSON.parse(text) as T;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async fetchBinary(url: string, maxBytes: number, referer: string): Promise<Buffer> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Referer: referer,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error('Bilibili 音频下载失败。');
+
+      const length = Number(response.headers.get('content-length') ?? 0);
+      if (length > maxBytes) throw new Error('音频文件过大，当前轻量 ASR 链路无法处理该分 P。');
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.byteLength > maxBytes) throw new Error('音频文件过大，当前轻量 ASR 链路无法处理该分 P。');
+      if (buffer.byteLength === 0) throw new Error('Bilibili 音频下载为空。');
+      return buffer;
     } finally {
       clearTimeout(timeout);
     }
