@@ -144,8 +144,16 @@ export class OpenAiCompatibleClient {
       if ((error as { name?: string }).name === 'AbortError') {
         throw new Error('模型服务请求超时，请检查网络、服务地址或调高超时时间。');
       }
+      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+      if (cause?.code === 'UND_ERR_CONNECT_TIMEOUT') {
+        throw new Error('模型服务连接超时，请检查 Node 后端代理或网络连通性。');
+      }
+      if (cause?.code === 'ENOTFOUND' || cause?.code === 'EAI_AGAIN') {
+        throw new Error('模型服务域名解析失败，请检查 DNS、代理或网络设置。');
+      }
       const message = error instanceof Error ? error.message : '';
-      if (message) throw new Error(message);
+      if (message && message !== 'fetch failed') throw new Error(message);
+      if (cause?.message) throw new Error(`模型服务无法连接：${cause.message}`);
       throw new Error('模型服务无法连接，请检查 API Base URL。');
     } finally {
       clearTimeout(timeout);

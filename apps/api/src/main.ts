@@ -2,8 +2,11 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { configureGlobalProxy } from './common/proxy';
 
 async function bootstrap() {
+  configureGlobalProxy();
+
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });
