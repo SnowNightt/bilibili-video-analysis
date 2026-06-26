@@ -12,5 +12,10 @@
     "dev:web": "pnpm --filter @bilibili-video-analysis/web dev",
     "build:web": "pnpm --filter @bilibili-video-analysis/web build",
     "preview:web": "pnpm --filter @bilibili-video-analysis/web preview"
+  },
+  "pnpm": {
+    "overrides": {
+      "@volar/typescript": "2.4.27"
+    }
   }
 }

@@ -11,8 +11,8 @@ const { state } = app
   <section class="page page-report">
     <template v-if="state.currentReport">
       <header class="report-header">
-        <div><button class="back-link" type="button" @click="app.navigate('history')">返回历史报告</button><p class="eyebrow">ANALYSIS REPORT</p><h1>{{ state.currentReport.video.title }}</h1><p>生成于 {{ state.currentReport.createdAt }}</p></div>
-        <div class="report-actions"><button class="secondary-button" type="button" @click="app.exportCurrentReport">导出 TXT</button><button class="primary-button" type="button" @click="app.printCurrentReport">导出 PDF</button></div>
+        <div><el-button class="back-link" native-type="button" @click="app.navigate('history')">返回历史报告</el-button><p class="eyebrow">ANALYSIS REPORT</p><h1>{{ state.currentReport.video.title }}</h1><p>生成于 {{ state.currentReport.createdAt }}</p></div>
+        <div class="report-actions"><el-button class="secondary-button" native-type="button" @click="app.exportCurrentReport">导出 TXT</el-button><el-button class="primary-button" native-type="button" @click="app.printCurrentReport">导出 PDF</el-button></div>
       </header>
 
       <div class="report-layout">
@@ -32,7 +32,7 @@ const { state } = app
           <section v-if="state.currentReport.conclusion"><h2>作者结论或立场</h2><p>{{ state.currentReport.conclusion }}</p></section>
           <section id="confidence" class="confidence-box"><h2>内容可信度提示</h2><p>{{ state.currentReport.confidenceNotes }}</p></section>
         </article>
-        <aside class="qa-panel"><div class="qa-heading"><strong>继续追问</strong><span>依据当前视频回答</span></div><div class="conversation"><div v-for="message in state.conversation" :key="message.id" :class="['message', message.role]"><span>{{ message.role === 'user' ? '你' : '省流看' }}</span><p>{{ message.text }}</p></div><p v-if="!state.conversation.length" class="conversation-empty">尚未开始追问。</p></div><form @submit.prevent="app.submitQuestion"><textarea v-model="state.question" rows="3" placeholder="输入关于当前视频的问题"></textarea><button class="primary-button" type="submit" :disabled="state.busy">发送问题</button></form></aside>
+        <aside class="qa-panel"><div class="qa-heading"><strong>继续追问</strong><span>依据当前视频回答</span></div><div class="conversation"><div v-for="message in state.conversation" :key="message.id" :class="['message', message.role]"><span>{{ message.role === 'user' ? '你' : '省流看' }}</span><p>{{ message.text }}</p></div><p v-if="!state.conversation.length" class="conversation-empty">尚未开始追问。</p></div><form @submit.prevent="app.submitQuestion"><el-input v-model="state.question" class="qa-textarea" type="textarea" :rows="3" placeholder="输入关于当前视频的问题" /><el-button class="primary-button" native-type="submit" :disabled="state.busy">发送问题</el-button></form></aside>
       </div>
     </template>
 

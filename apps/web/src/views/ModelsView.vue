@@ -13,7 +13,7 @@ const providers = computed(() => [...new Set(state.modelConfigs.map((model) => m
   <section class="page page-models">
     <header class="page-heading">
       <div><p class="eyebrow">LOCAL CREDENTIALS</p><h1>模型管理</h1><p>统一管理厂商、模型能力和任务默认配置。</p></div>
-      <button class="primary-button compact" type="button" @click="app.openModelEditor()">添加配置</button>
+      <el-button class="primary-button compact" native-type="button" @click="app.openModelEditor()">添加配置</el-button>
     </header>
 
     <div class="security-notice">
@@ -22,7 +22,10 @@ const providers = computed(() => [...new Set(state.modelConfigs.map((model) => m
     </div>
 
     <div v-if="state.modelConfigs.length" class="toolbar model-toolbar">
-      <select v-model="state.modelProviderFilter" aria-label="模型厂商筛选"><option value="all">全部厂商</option><option v-for="provider in providers" :key="provider" :value="provider">{{ provider }}</option></select>
+      <el-select v-model="state.modelProviderFilter" class="provider-filter" aria-label="模型厂商筛选">
+        <el-option label="全部厂商" value="all" />
+        <el-option v-for="provider in providers" :key="provider" :label="provider" :value="provider" />
+      </el-select>
       <span>{{ filteredModels.length }} 个配置</span>
     </div>
 
@@ -30,7 +33,7 @@ const providers = computed(() => [...new Set(state.modelConfigs.map((model) => m
       <article v-for="model in filteredModels" :key="model.id">
         <div class="model-main"><div><span class="capability-label">{{ CAPABILITY_LABELS[model.capability] }}</span><h2>{{ model.name }}</h2></div><span v-if="model.isDefault" class="default-tag">默认</span></div>
         <dl><div><dt>厂商</dt><dd>{{ model.provider }}</dd></div><div><dt>模型</dt><dd>{{ model.modelName }}</dd></div><div><dt>API 地址</dt><dd>{{ model.baseUrl }}</dd></div><div><dt>API Key</dt><dd>{{ model.apiKeyConfigured ? '已安全配置' : '未配置' }}</dd></div></dl>
-        <div class="model-status"><span class="status-dot" :class="model.status === 'available' ? '已完成' : '已取消'">{{ model.status === 'available' ? '可用' : model.status === 'unavailable' ? '不可用' : '未测试' }}</span><button type="button" @click="app.openModelEditor(model)">编辑</button><button class="danger-link" type="button" @click="app.removeModel(model.id)">删除</button></div>
+        <div class="model-status"><span class="status-dot" :class="model.status === 'available' ? '已完成' : '已取消'">{{ model.status === 'available' ? '可用' : model.status === 'unavailable' ? '不可用' : '未测试' }}</span><el-button native-type="button" @click="app.openModelEditor(model)">编辑</el-button><el-button class="danger-link" native-type="button" @click="app.removeModel(model.id)">删除</el-button></div>
       </article>
     </div>
 

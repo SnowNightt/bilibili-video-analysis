@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { CAPABILITY_LABELS, MODEL_PROVIDERS } from '../constants/app'
 import type { AppController } from '../composables/useAppState'
 import type { ModelCapability, ModelConfigDraft } from '../types/domain'
@@ -18,6 +18,19 @@ const modelDraft = reactive<ModelConfigDraft>({
   maxConcurrency: 1,
   isDefault: false,
 })
+
+const canSubmitModel = computed(
+  () =>
+    Boolean(modelDraft.name.trim()) &&
+    Boolean(modelDraft.provider) &&
+    Boolean(modelDraft.baseUrl.trim()) &&
+    Boolean(modelDraft.modelName.trim()) &&
+    Boolean(modelDraft.capability) &&
+    Boolean(modelDraft.apiKeyConfigured || modelDraft.apiKey.trim()) &&
+    Number(modelDraft.timeoutSeconds) >= 10 &&
+    Number(modelDraft.maxConcurrency) >= 1 &&
+    Number(modelDraft.maxConcurrency) <= 20,
+)
 
 watch(
   () => state.showModelModal,
@@ -49,42 +62,124 @@ function closeModelModal() {
   state.showModelModal = false
   state.editingModel = null
 }
+
+function handleModelModalUpdate(visible: boolean) {
+  if (visible) state.showModelModal = true
+  else closeModelModal()
+}
+
+function handleDeleteModalUpdate(visible: boolean) {
+  if (!visible) state.deletingJobId = null
+}
+
+function submitModelDraft() {
+  if (!canSubmitModel.value) return
+  void app.submitModel({ ...modelDraft })
+}
 </script>
 
 <template>
-  <div v-if="state.showStartConfirm" class="modal-layer" role="presentation" @click.self="state.showStartConfirm = false">
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="start-title">
+  <el-dialog
+    v-model="state.showStartConfirm"
+    class="app-dialog"
+    width="min(540px, calc(100vw - 40px))"
+    :show-close="false"
+    align-center
+  >
+    <section aria-labelledby="start-title">
       <p class="eyebrow">CONFIRM COST</p><h2 id="start-title">确认开始分析</h2>
       <p>本次将使用“{{ modeLabel }}”与“{{ depthLabel }}分析”，预计处理 {{ estimate }}。系统不会在失败后自动切换模式。</p>
-      <dl v-if="state.currentVideo">
-        <div><dt>视频</dt><dd>{{ state.currentVideo.title }}</dd></div>
-        <div><dt>分 P 数量</dt><dd>{{ state.selectedPartCids.length }}</dd></div>
-        <div v-for="capability in app.requiredCapabilities.value" :key="capability"><dt>{{ CAPABILITY_LABELS[capability] }}</dt><dd>{{ selectedModelName(capability) }}</dd></div>
-      </dl>
-      <div class="modal-actions"><button class="secondary-button" type="button" @click="state.showStartConfirm = false">返回调整</button><button class="primary-button" type="button" :disabled="state.busy" @click="app.startAnalysis">{{ state.busy ? '提交中…' : '确认并开始' }}</button></div>
+      <el-descriptions v-if="state.currentVideo" class="confirm-descriptions" :column="2">
+        <el-descriptions-item label="视频">
+          <el-tooltip :content="state.currentVideo.title" placement="top" effect="dark">
+            <span class="tooltip-ellipsis">{{ state.currentVideo.title }}</span>
+          </el-tooltip>
+        </el-descriptions-item>
+        <el-descriptions-item label="分 P 数量">{{ state.selectedPartCids.length }}</el-descriptions-item>
+        <el-descriptions-item
+          v-for="capability in app.requiredCapabilities.value"
+          :key="capability"
+          :label="CAPABILITY_LABELS[capability]"
+        >
+          <span class="tooltip-ellipsis">{{ selectedModelName(capability) }}</span>
+        </el-descriptions-item>
+      </el-descriptions>
+      <div class="modal-actions">
+        <el-button class="secondary-button" native-type="button" @click="state.showStartConfirm = false">返回调整</el-button>
+        <el-button class="primary-button" native-type="button" :loading="state.busy" :disabled="state.busy" @click="app.startAnalysis">{{ state.busy ? '提交中…' : '确认并开始' }}</el-button>
+      </div>
     </section>
-  </div>
+  </el-dialog>
 
-  <div v-if="state.showModelModal" class="modal-layer" role="presentation" @click.self="closeModelModal">
-    <section class="modal model-modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
+  <el-dialog
+    :model-value="state.showModelModal"
+    class="app-dialog model-dialog"
+    width="min(660px, calc(100vw - 40px))"
+    :show-close="false"
+    align-center
+    @update:model-value="handleModelModalUpdate"
+  >
+    <section aria-labelledby="model-title">
       <p class="eyebrow">MODEL PROFILE</p><h2 id="model-title">{{ state.editingModel ? '编辑模型配置' : '添加模型配置' }}</h2>
-      <form id="model-form" class="form-grid" @submit.prevent="app.submitModel({ ...modelDraft })">
-        <label>配置名称<input v-model.trim="modelDraft.name" required /></label>
-        <label>模型厂商<select v-model="modelDraft.provider" required><option value="" disabled>请选择厂商</option><option v-for="provider in MODEL_PROVIDERS" :key="provider">{{ provider }}</option></select></label>
-        <label class="full">API Base URL<input v-model.trim="modelDraft.baseUrl" type="url" required /></label>
-        <label class="full">API Key<input v-model="modelDraft.apiKey" type="password" :required="!modelDraft.apiKeyConfigured" autocomplete="new-password" :placeholder="modelDraft.apiKeyConfigured ? '已配置；留空表示不更换' : '密钥只发送给本地后端'" /></label>
-        <label>模型名称<input v-model.trim="modelDraft.modelName" required /></label>
-        <label>模型能力<select v-model="modelDraft.capability" required><option v-for="(label, capability) in CAPABILITY_LABELS" :key="capability" :value="capability">{{ label }}</option></select></label>
-        <label>请求超时（秒）<input v-model.number="modelDraft.timeoutSeconds" type="number" min="10" required /></label>
-        <label>最大并发数<input v-model.number="modelDraft.maxConcurrency" type="number" min="1" max="20" required /></label>
-        <label class="checkbox-field"><input v-model="modelDraft.isDefault" type="checkbox" />设为该能力的默认模型</label>
+      <form id="model-form" class="form-grid" @submit.prevent="submitModelDraft">
+        <label>配置名称<el-input v-model.trim="modelDraft.name" required /></label>
+        <label>
+          模型厂商
+          <el-select v-model="modelDraft.provider" placeholder="请选择厂商" required>
+            <el-option v-for="provider in MODEL_PROVIDERS" :key="provider" :label="provider" :value="provider" />
+          </el-select>
+        </label>
+        <label class="full">API Base URL<el-input v-model.trim="modelDraft.baseUrl" type="url" required /></label>
+        <label class="full">
+          API Key
+          <el-input
+            v-model="modelDraft.apiKey"
+            type="password"
+            :required="!modelDraft.apiKeyConfigured"
+            autocomplete="new-password"
+            :placeholder="modelDraft.apiKeyConfigured ? '已配置；留空表示不更换' : '密钥只发送给本地后端'"
+            show-password
+          />
+        </label>
+        <label>模型名称<el-input v-model.trim="modelDraft.modelName" required /></label>
+        <label>
+          模型能力
+          <el-select v-model="modelDraft.capability" required>
+            <el-option
+              v-for="(label, capability) in CAPABILITY_LABELS"
+              :key="capability"
+              :label="label"
+              :value="capability"
+            />
+          </el-select>
+        </label>
+        <label>请求超时（秒）<el-input-number v-model="modelDraft.timeoutSeconds" :min="10" :controls="false" required /></label>
+        <label>最大并发数<el-input-number v-model="modelDraft.maxConcurrency" :min="1" :max="20" :controls="false" required /></label>
+        <div class="checkbox-field"><el-checkbox v-model="modelDraft.isDefault">设为该能力的默认模型</el-checkbox></div>
       </form>
       <p class="credential-help">保存前会调用本地后端测试地址、密钥和模型可用性。前端不会持久化 API Key。</p>
-      <div class="modal-actions"><button class="secondary-button" type="button" @click="closeModelModal">取消</button><button class="primary-button" type="submit" form="model-form" :disabled="state.busy">{{ state.busy ? '测试中…' : '测试连接并保存' }}</button></div>
+      <div class="modal-actions">
+        <el-button class="secondary-button" native-type="button" @click="closeModelModal">取消</el-button>
+        <el-button class="primary-button" native-type="submit" form="model-form" :loading="state.busy" :disabled="state.busy || !canSubmitModel">{{ state.busy ? '测试中…' : '测试连接并保存' }}</el-button>
+      </div>
     </section>
-  </div>
+  </el-dialog>
 
-  <div v-if="state.deletingJobId" class="modal-layer" role="presentation" @click.self="state.deletingJobId = null">
-    <section class="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">删除历史记录？</h2><p>本地保存的任务快照将被删除。后端媒体与报告文件的清理由分析服务负责。</p><div class="modal-actions"><button class="secondary-button" type="button" @click="state.deletingJobId = null">取消</button><button class="primary-button danger-button" type="button" @click="app.deleteJob">确认删除</button></div></section>
-  </div>
+  <el-dialog
+    :model-value="Boolean(state.deletingJobId)"
+    class="app-dialog small-dialog"
+    width="min(430px, calc(100vw - 40px))"
+    :show-close="false"
+    align-center
+    @update:model-value="handleDeleteModalUpdate"
+  >
+    <section aria-labelledby="delete-title">
+      <h2 id="delete-title">删除历史记录？</h2>
+      <p>本地保存的任务快照将被删除。后端媒体与报告文件的清理由分析服务负责。</p>
+      <div class="modal-actions">
+        <el-button class="secondary-button" native-type="button" @click="state.deletingJobId = null">取消</el-button>
+        <el-button class="primary-button danger-button" native-type="button" @click="app.deleteJob">确认删除</el-button>
+      </div>
+    </section>
+  </el-dialog>
 </template>

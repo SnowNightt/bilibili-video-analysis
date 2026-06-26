@@ -12,15 +12,15 @@ const { state, filteredJobs } = app
   <section class="page page-history">
     <header class="page-heading">
       <div><p class="eyebrow">LOCAL ARCHIVE</p><h1>历史报告</h1><p>这里只展示用户真实创建并保存在本机的任务。</p></div>
-      <button class="primary-button compact" type="button" @click="app.navigate('new')">新建分析</button>
+      <el-button class="primary-button compact" native-type="button" @click="app.navigate('new')">新建分析</el-button>
     </header>
 
     <div class="toolbar">
-      <label class="search-field"><span class="sr-only">搜索报告</span><input v-model="state.searchQuery" placeholder="搜索标题或 BV 号" /></label>
-      <select v-model="state.statusFilter" aria-label="状态筛选">
-        <option value="all">全部状态</option>
-        <option v-for="(label, value) in JOB_STATUS_LABELS" :key="value" :value="value">{{ label }}</option>
-      </select>
+      <label class="search-field"><span class="sr-only">搜索报告</span><el-input v-model="state.searchQuery" placeholder="搜索标题或 BV 号" /></label>
+      <el-select v-model="state.statusFilter" class="status-filter" aria-label="状态筛选">
+        <el-option label="全部状态" value="all" />
+        <el-option v-for="(label, value) in JOB_STATUS_LABELS" :key="value" :label="label" :value="value" />
+      </el-select>
       <span>{{ filteredJobs.length }} 条记录</span>
     </div>
 
@@ -30,9 +30,9 @@ const { state, filteredJobs } = app
         <div class="history-content"><h2>{{ job.video.title }}</h2><p>{{ job.bvid }} · {{ MODE_LABELS[job.options.mode] }} · {{ DEPTH_LABELS[job.options.depth] }} · {{ formatDuration(job.video.duration) }}</p></div>
         <span class="status-dot" :class="JOB_STATUS_LABELS[job.status]">{{ JOB_STATUS_LABELS[job.status] }}</span>
         <div class="row-actions">
-          <button type="button" @click="app.openJob(job)">{{ job.status === 'completed' ? '查看' : '详情' }}</button>
-          <button type="button" @click="app.reanalyze(job)">重新分析</button>
-          <button class="danger-link" type="button" @click="app.confirmDeleteJob(job.id)">删除</button>
+          <el-button native-type="button" @click="app.openJob(job)">{{ job.status === 'completed' ? '查看' : '详情' }}</el-button>
+          <el-button native-type="button" @click="app.reanalyze(job)">重新分析</el-button>
+          <el-button class="danger-link" native-type="button" @click="app.confirmDeleteJob(job.id)">删除</el-button>
         </div>
       </article>
     </div>

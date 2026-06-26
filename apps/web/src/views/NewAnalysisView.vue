@@ -41,15 +41,15 @@ function modelsFor(capability: ModelCapability) {
         <h1>新建视频分析</h1>
         <p>粘贴 Bilibili 公开视频链接或 BV 号，生成一次深度分析。</p>
       </div>
-      <button class="text-button" type="button" @click="app.navigate('models')">管理模型</button>
+      <el-button class="text-button" native-type="button" @click="app.navigate('models')">管理模型</el-button>
     </header>
 
     <div class="video-input-row">
       <label class="input-wrap" :class="{ invalid: state.inputTouched && !isValidBvid }">
         <span class="sr-only">Bilibili 视频链接或 BV 号</span>
-        <input
+        <el-input
           v-model="state.bvidInput"
-          type="text"
+          class="bvid-input"
           placeholder="输入 BV 号或完整视频地址"
           @input="state.inputTouched = false"
           @keyup.enter="app.loadVideo"
@@ -57,9 +57,15 @@ function modelsFor(capability: ModelCapability) {
         <span v-if="isValidBvid" class="input-status valid">格式正确</span>
         <span v-else-if="state.inputTouched" class="input-status error">格式不正确</span>
       </label>
-      <button class="primary-button read-button" type="button" :disabled="state.videoLoading" @click="app.loadVideo">
+      <el-button
+        class="primary-button read-button"
+        native-type="button"
+        :loading="state.videoLoading"
+        :disabled="state.videoLoading"
+        @click="app.loadVideo"
+      >
         {{ state.videoLoading ? '读取中…' : '读取视频' }}
-      </button>
+      </el-button>
     </div>
     <p class="input-help">支持 B 站 BV 号或完整视频链接；仅处理公开且免登录的视频。</p>
 
@@ -89,25 +95,28 @@ function modelsFor(capability: ModelCapability) {
         <fieldset class="part-picker">
           <legend>分 P 选择</legend>
           <div>
-            <button type="button" :class="{ active: allPartsSelected }" @click="app.selectAllParts(!allPartsSelected)">
+            <el-button native-type="button" :class="{ active: allPartsSelected }" @click="app.selectAllParts(!allPartsSelected)">
               全部（{{ state.currentVideo.parts.length }}P）
-            </button>
-            <button
+            </el-button>
+            <el-button
               v-for="part in state.currentVideo.parts"
               :key="part.cid"
-              type="button"
+              native-type="button"
               :class="{ active: state.selectedPartCids.includes(part.cid) }"
               @click="app.togglePart(part.cid)"
             >
               P{{ part.page }} {{ part.title }} · {{ formatDuration(part.duration) }}
-            </button>
+            </el-button>
           </div>
         </fieldset>
       </section>
 
       <section class="config-column" aria-label="分析配置">
         <div class="config-section">
-          <div class="section-title-row"><h3>分析模式</h3><span class="help-dot" title="失败后不会自动切换模式">?</span></div>
+          <div class="section-title-row">
+            <h3>分析模式</h3>
+            <el-tooltip content="失败后不会自动切换模式" placement="top"><span class="help-dot">?</span></el-tooltip>
+          </div>
           <div class="mode-grid">
             <label
               v-for="mode in ANALYSIS_MODES"
@@ -122,7 +131,10 @@ function modelsFor(capability: ModelCapability) {
         </div>
 
         <div class="config-section depth-section">
-          <div class="section-title-row"><h3>分析深度</h3><span class="help-dot" title="深度越高，耗时和调用成本通常越高">?</span></div>
+          <div class="section-title-row">
+            <h3>分析深度</h3>
+            <el-tooltip content="深度越高，耗时和调用成本通常越高" placement="top"><span class="help-dot">?</span></el-tooltip>
+          </div>
           <div class="depth-grid">
             <label
               v-for="depth in ANALYSIS_DEPTHS"
@@ -137,15 +149,18 @@ function modelsFor(capability: ModelCapability) {
         </div>
 
         <div class="config-section option-section">
-          <div class="section-title-row"><h3>分析选项</h3><span class="help-dot" title="关闭截图可减少处理步骤">?</span></div>
+          <div class="section-title-row">
+            <h3>分析选项</h3>
+            <el-tooltip content="关闭截图可减少处理步骤" placement="top"><span class="help-dot">?</span></el-tooltip>
+          </div>
           <div class="switch-grid">
             <label>
               <span><strong>生成关键截图</strong><small>提取关键画面辅助理解</small></span>
-              <input v-model="state.screenshotsEnabled" type="checkbox" @change="app.syncDefaultModels" /><span class="switch-ui"></span>
+              <el-switch v-model="state.screenshotsEnabled" class="analysis-switch" @change="app.syncDefaultModels" />
             </label>
             <label>
               <span><strong>保留时间戳</strong><small>报告内容关联原始时间位置</small></span>
-              <input v-model="state.timestampsEnabled" type="checkbox" /><span class="switch-ui"></span>
+              <el-switch v-model="state.timestampsEnabled" class="analysis-switch" />
             </label>
           </div>
         </div>
@@ -153,29 +168,41 @@ function modelsFor(capability: ModelCapability) {
         <div class="config-section model-section">
           <div class="section-title-row">
             <div><h3>本次使用模型</h3><p>从“模型管理”中已保存的配置里选择。</p></div>
-            <button class="text-button small" type="button" @click="app.navigate('models')">管理模型</button>
+            <el-button class="text-button small" native-type="button" @click="app.navigate('models')">管理模型</el-button>
           </div>
           <div v-if="state.modelConfigs.length === 0" class="inline-empty">
             尚未配置模型。开始分析前需要添加对应能力的模型配置。
           </div>
           <div v-for="capability in requiredCapabilities" :key="capability" class="model-row model-row--single">
             <label :for="`model-${capability}`">{{ CAPABILITY_LABELS[capability] }}</label>
-            <select :id="`model-${capability}`" v-model="state.selectedModelIds[capability]">
-              <option value="">请选择模型</option>
-              <option v-for="model in modelsFor(capability)" :key="model.id" :value="model.id">
-                {{ model.name }} · {{ model.modelName }}
-              </option>
-            </select>
+            <el-select :id="`model-${capability}`" v-model="state.selectedModelIds[capability]" placeholder="请选择模型">
+              <el-option label="请选择模型" value="" />
+              <el-option
+                v-for="model in modelsFor(capability)"
+                :key="model.id"
+                :label="`${model.name} · ${model.modelName}`"
+                :value="model.id"
+              />
+            </el-select>
           </div>
           <p v-if="missingCapabilities.length" class="field-warning">
             尚缺：{{ missingCapabilities.map((item) => CAPABILITY_LABELS[item]).join('、') }}
           </p>
-          <button class="advanced-toggle" type="button" @click="state.showAdvanced = !state.showAdvanced">
+          <el-button class="advanced-toggle" native-type="button" @click="state.showAdvanced = !state.showAdvanced">
             {{ state.showAdvanced ? '收起高级设置' : '展开高级设置' }}
-          </button>
+          </el-button>
           <div v-if="state.showAdvanced" class="advanced-grid">
-            <label>输出语言<select v-model="state.outputLanguage"><option>简体中文</option><option>English</option></select></label>
-            <label>最大截图数量<input v-model.number="state.maxScreenshots" type="number" min="0" max="20" /></label>
+            <label>
+              输出语言
+              <el-select v-model="state.outputLanguage">
+                <el-option label="简体中文" value="简体中文" />
+                <el-option label="English" value="English" />
+              </el-select>
+            </label>
+            <label>
+              最大截图数量
+              <el-input-number v-model="state.maxScreenshots" :min="0" :max="20" :controls="false" />
+            </label>
           </div>
         </div>
 
@@ -185,7 +212,7 @@ function modelsFor(capability: ModelCapability) {
         </div>
 
         <div class="action-row">
-          <button class="primary-button" type="button" @click="app.requestStartAnalysis">确认并开始分析</button>
+          <el-button class="primary-button" native-type="button" @click="app.requestStartAnalysis">确认并开始分析</el-button>
         </div>
       </section>
     </div>
@@ -197,7 +224,7 @@ function modelsFor(capability: ModelCapability) {
     />
 
     <section class="recent-section">
-      <div class="section-heading"><h2>最近完成的报告</h2><button type="button" class="text-button" @click="app.navigate('history')">查看全部历史报告</button></div>
+      <div class="section-heading"><h2>最近完成的报告</h2><el-button native-type="button" class="text-button" @click="app.navigate('history')">查看全部历史报告</el-button></div>
       <div v-if="completedJobs.length" class="table-wrap">
         <table>
           <thead><tr><th>视频</th><th>模式</th><th>深度</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
@@ -208,7 +235,7 @@ function modelsFor(capability: ModelCapability) {
               <td>{{ DEPTH_LABELS[job.options.depth] }}</td>
               <td><span class="status-dot 已完成">已完成</span></td>
               <td>{{ job.createdAt }}</td>
-              <td><button type="button" class="table-link" @click="app.openJob(job)">查看报告</button></td>
+              <td><el-button native-type="button" class="table-link" @click="app.openJob(job)">查看报告</el-button></td>
             </tr>
           </tbody>
         </table>

@@ -25,7 +25,7 @@ const isActive = computed(() =>
   <section class="page page-progress">
     <header class="page-heading">
       <div><p class="eyebrow">ANALYSIS JOB</p><h1>任务进度</h1><p>状态由本地分析服务持续更新。</p></div>
-      <button class="text-button" type="button" @click="app.navigate('new')">返回新建分析</button>
+      <el-button class="text-button" native-type="button" @click="app.navigate('new')">返回新建分析</el-button>
     </header>
 
     <template v-if="state.currentJob">
@@ -44,7 +44,7 @@ const isActive = computed(() =>
         <strong class="progress-percent">{{ state.currentJob.progress }}%</strong>
       </div>
 
-      <div class="progress-bar" aria-label="任务进度"><span :style="{ width: `${state.currentJob.progress}%` }"></span></div>
+      <el-progress class="progress-bar" :percentage="state.currentJob.progress" :show-text="false" aria-label="任务进度" />
 
       <ol class="steps-list">
         <li
@@ -62,9 +62,9 @@ const isActive = computed(() =>
       </div>
 
       <div class="progress-actions">
-        <button v-if="isActive" class="secondary-button danger" type="button" :disabled="state.busy" @click="app.cancelCurrentJob">取消任务</button>
-        <button v-if="state.currentJob.status === 'completed'" class="primary-button" type="button" @click="app.openJob(state.currentJob)">阅读分析报告</button>
-        <button v-if="state.currentJob.status === 'failed' || state.currentJob.status === 'cancelled'" class="primary-button" type="button" @click="app.reanalyze(state.currentJob)">重新配置分析</button>
+        <el-button v-if="isActive" class="secondary-button danger" native-type="button" :disabled="state.busy" @click="app.cancelCurrentJob">取消任务</el-button>
+        <el-button v-if="state.currentJob.status === 'completed'" class="primary-button" native-type="button" @click="app.openJob(state.currentJob)">阅读分析报告</el-button>
+        <el-button v-if="state.currentJob.status === 'failed' || state.currentJob.status === 'cancelled'" class="primary-button" native-type="button" @click="app.reanalyze(state.currentJob)">重新配置分析</el-button>
       </div>
     </template>
 
