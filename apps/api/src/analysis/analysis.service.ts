@@ -16,6 +16,7 @@ import {
   type ConversationMessage,
   type JobStatus,
   type ModelCapability,
+  type ModelConfig,
   type ReportChapter,
   type ReportPoint,
   type ReportScreenshot,
@@ -72,6 +73,21 @@ interface SubtitleItem {
 interface DownloadedAudio {
   bytes: Buffer;
   fileName: string;
+}
+
+interface ExtractiveReportDraft {
+  summary: string;
+  overview: string;
+  chapters: ReportChapter[];
+  keyPoints: ReportPoint[];
+  facts: string[];
+  conclusion: string;
+}
+
+interface RankedSentence {
+  index: number;
+  text: string;
+  score: number;
 }
 
 type TranscriptSource = 'none' | 'subtitle' | 'asr';
@@ -445,15 +461,54 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       );
       modelJson = this.parseJsonObject(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      if (message.includes('JSON') || message.includes('格式')) {
-        modelJson = undefined;
+      if (this.isModelFormatError(error)) {
+        modelJson = await this.retryStructuredReport(config, apiKey, job, transcript, transcriptSource);
       } else {
         throw error;
       }
     }
 
     return this.normalizeReport(modelJson, job, transcript, transcriptSource);
+  }
+
+  private async retryStructuredReport(
+    config: Pick<ModelConfig, 'baseUrl' | 'modelName' | 'timeoutSeconds'>,
+    apiKey: string,
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+  ): Promise<unknown | undefined> {
+    try {
+      const response = await this.client.chat(
+        config,
+        apiKey,
+        [
+          {
+            role: 'system',
+            content:
+              '你是严谨的视频分析助手。只输出一个合法 JSON 对象，不要输出 Markdown、解释、转写全文或代码块。JSON 字符串内不要换行过多。',
+          },
+          {
+            role: 'user',
+            content: this.compactReportPrompt(job, transcript, transcriptSource),
+          },
+        ],
+        {
+          temperature: 0.1,
+          maxTokens: this.maxReportTokens(job.options.depth) + 800,
+        },
+      );
+      return this.parseJsonObject(response);
+    } catch (error) {
+      this.logger.warn(`Structured report retry failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  private isModelFormatError(error: unknown): boolean {
+    if (error instanceof SyntaxError) return true;
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return /json|格式|unexpected|expected|position|unterminated|response_format|schema/i.test(message);
   }
 
   private reportPrompt(job: AnalysisJob, transcript: string, transcriptSource: TranscriptSource): string {
@@ -470,6 +525,21 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters, keyPoints, facts 和 conclusion；不要只复述标题、简介或分 P 信息。',
       '请返回 JSON，字段必须包含 summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
       'chapters/recommendedSegments 的元素字段为 title, startSeconds, summary；keyPoints 元素字段为 title, detail；screenshots 元素字段为 url, timestampSeconds, description。',
+    ].join('\n\n');
+  }
+
+  private compactReportPrompt(job: AnalysisJob, transcript: string, transcriptSource: TranscriptSource): string {
+    const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
+    return [
+      `输出语言：${job.options.outputLanguage}`,
+      `分析深度：${job.options.depth}`,
+      `视频信息：${JSON.stringify(job.video)}`,
+      `选择分 P：${JSON.stringify(selectedParts)}`,
+      `内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}`,
+      `内容上下文：${this.compactTranscriptForPrompt(transcript, job.video.title) || '未读取到字幕或转写。'}`,
+      '请基于内容上下文做分析总结，不要复述整段转写。',
+      '只返回 JSON 对象，字段必须是：summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
+      'summary 为 1 句话；overview 为 1 段综合概览；chapters 和 recommendedSegments 最多 5 项，每项包含 title, startSeconds, summary；keyPoints 最多 6 项，每项包含 title, detail；facts 最多 8 条；screenshots 无真实截图时返回 []。',
     ].join('\n\n');
   }
 
@@ -503,45 +573,300 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     transcriptSource: TranscriptSource,
   ): AnalysisReport {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
-    const chapters = this.fallbackChapters(selectedParts.length ? selectedParts : job.video.parts, job.options);
     const hasTranscript = Boolean(transcript.trim());
     const evidence = this.transcriptExcerpt(transcript);
     const sourceLabel = this.transcriptSourceLabel(transcriptSource);
+    const extracted = hasTranscript
+      ? this.extractReportFromTranscript(job, transcript, selectedParts.length ? selectedParts : job.video.parts)
+      : undefined;
+    const chapters =
+      extracted?.chapters.length ? extracted.chapters : this.fallbackChapters(selectedParts.length ? selectedParts : job.video.parts, job.options);
+    const metadataFacts = [
+      `UP 主：${job.video.ownerName}`,
+      `视频 BV 号：${job.video.bvid}`,
+      `视频总时长：${job.video.duration} 秒`,
+      `已选择分 P：${selectedParts.map((part) => `P${part.page} ${part.title}`).join('、')}`,
+      hasTranscript ? `内容上下文来源：${sourceLabel}，长度 ${transcript.length} 字符。` : '',
+    ].filter(Boolean);
+
     return {
       id: randomUUID(),
       jobId: job.id,
       video: job.video,
       createdAt: new Date().toISOString(),
-      summary: `《${job.video.title}》的分析已完成，报告基于视频元数据${hasTranscript ? `和${sourceLabel}` : ''}生成。`,
-      overview: evidence
-        ? `已取得${sourceLabel}，但模型没有返回可解析的结构化 JSON。以下为内容上下文片段：\n${evidence}`
+      summary:
+        extracted?.summary ??
+        `《${job.video.title}》的分析已完成，报告基于视频元数据${hasTranscript ? `和${sourceLabel}` : ''}生成。`,
+      overview: extracted?.overview
+        ? extracted.overview
+        : evidence
+          ? `已取得${sourceLabel}，但文本模型没有返回可解析的结构化 JSON；以下为内容上下文片段：\n${evidence}`
         : job.video.description?.trim() ||
           `该视频由 ${job.video.ownerName} 发布，时长约 ${Math.round(job.video.duration / 60)} 分钟。`,
       chapters,
-      keyPoints: [
-        {
-          title: hasTranscript ? '内容上下文' : '内容主题',
-          detail: evidence || `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
-        },
-        {
-          title: '处理范围',
-          detail: `本次选择了 ${job.options.selectedPartCids.length} 个分 P，分析深度为 ${job.options.depth}。`,
-        },
-      ],
-      facts: [
-        `UP 主：${job.video.ownerName}`,
-        `视频 BV 号：${job.video.bvid}`,
-        `视频总时长：${job.video.duration} 秒`,
-        `已选择分 P：${selectedParts.map((part) => `P${part.page} ${part.title}`).join('、')}`,
-        hasTranscript ? `内容上下文来源：${sourceLabel}，长度 ${transcript.length} 字符。` : '',
-      ].filter(Boolean),
-      conclusion: '当前报告未从视频内容中提取到明确的作者结论或立场，请结合原视频核对。',
+      keyPoints: extracted?.keyPoints.length
+        ? extracted.keyPoints
+        : [
+            {
+              title: hasTranscript ? '内容上下文' : '内容主题',
+              detail: evidence || `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
+            },
+            {
+              title: '处理范围',
+              detail: `本次选择了 ${job.options.selectedPartCids.length} 个分 P，分析深度为 ${job.options.depth}。`,
+            },
+          ],
+      facts: [...metadataFacts, ...(extracted?.facts ?? [])].slice(0, 12),
+      conclusion: extracted?.conclusion ?? '当前报告未从视频内容中提取到明确的作者结论或立场，请结合原视频核对。',
       screenshots: this.fallbackScreenshots(job),
       recommendedSegments: chapters.slice(0, Math.min(3, chapters.length)),
       confidenceNotes: hasTranscript
-        ? `报告基于视频元数据和${sourceLabel}生成；模型结构化输出不可解析时会保留上下文片段作为证据。未能验证画面细节。`
+        ? extracted
+          ? `文本模型没有返回可解析的结构化 JSON；系统已改用本地规则从${sourceLabel}中提炼摘要、要点和结论。报告可用于快速理解主题，但章节时间和细节仍需结合原视频核对。`
+          : `报告基于视频元数据和${sourceLabel}生成；模型结构化输出不可解析时会保留上下文片段作为证据。未能验证画面细节。`
         : '未读取到公开字幕或真实媒体内容，报告主要基于视频元数据和分 P 信息生成；具体观点需以原视频为准。',
     };
+  }
+
+  private extractReportFromTranscript(
+    job: AnalysisJob,
+    transcript: string,
+    parts: VideoPart[],
+  ): ExtractiveReportDraft | undefined {
+    const sentences = this.transcriptSentences(transcript, job.video.title);
+    if (!sentences.length) return undefined;
+
+    const limits = this.extractiveLimits(job.options.depth);
+    const ranked = this.rankTranscriptSentences(job, sentences);
+    const highlights = this.uniqueTexts(ranked.slice(0, limits.keyPoints + 3).sort((a, b) => a.index - b.index).map((item) => item.text));
+    const overviewSentences = highlights.slice(0, limits.overviewSentences);
+    const overview = this.truncateText(
+      overviewSentences.join('') || this.transcriptExcerpt(transcript),
+      limits.overviewChars,
+    );
+
+    const summaryDetails = highlights
+      .slice(0, 3)
+      .map((sentence) => this.truncateText(sentence.replace(/[。！？!?；;]$/, ''), 72))
+      .join('；');
+    const summary = this.ensurePeriod(
+      this.truncateText(
+        summaryDetails
+          ? `本视频围绕“${this.cleanReportTitle(job.video.title)}”展开，重点包括${summaryDetails}`
+          : `本视频围绕“${this.cleanReportTitle(job.video.title)}”展开，主要内容来自已取得的转写文本`,
+        260,
+      ),
+    );
+
+    const keyPoints = highlights.slice(0, limits.keyPoints).map((sentence) => ({
+      title: this.sentenceTitle(sentence),
+      detail: this.ensurePeriod(this.truncateText(sentence, 260)),
+    }));
+
+    const chapterSeeds = this.uniqueRankedSentences(ranked.slice(0, limits.chapters));
+    const chapters = chapterSeeds
+      .sort((a, b) => a.index - b.index)
+      .map((item, order) => ({
+        title: this.sentenceTitle(item.text) || `片段 ${order + 1}`,
+        startSeconds: this.estimatedStartSeconds(job, item.index, sentences.length, order, chapterSeeds.length),
+        summary: this.ensurePeriod(this.truncateText(item.text, 220)),
+      }));
+
+    const facts = this.extractFactSentences(sentences, limits.facts);
+    const conclusion = this.extractConclusion(sentences, highlights, parts);
+
+    return {
+      summary,
+      overview: this.ensurePeriod(overview),
+      chapters,
+      keyPoints,
+      facts,
+      conclusion,
+    };
+  }
+
+  private compactTranscriptForPrompt(transcript: string, title?: string): string {
+    const text = this.cleanTranscriptText(transcript, title);
+    if (text.length <= 8000) return text;
+    const head = text.slice(0, 3200);
+    const middleStart = Math.max(0, Math.floor(text.length / 2) - 1200);
+    const middle = text.slice(middleStart, middleStart + 2400);
+    const tail = text.slice(-2400);
+    return [head, middle, tail].join('\n...\n');
+  }
+
+  private transcriptSentences(transcript: string, title?: string): string[] {
+    const text = this.cleanTranscriptText(transcript, title);
+    if (!text) return [];
+    const sentences = (text.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [])
+      .map((sentence) => this.normalizeSentence(sentence))
+      .filter((sentence) => sentence.length >= 10);
+
+    if (sentences.length) return sentences.map((sentence) => this.truncateText(sentence, 360));
+
+    const chunks: string[] = [];
+    for (let index = 0; index < text.length; index += 180) {
+      const chunk = this.normalizeSentence(text.slice(index, index + 180));
+      if (chunk.length >= 10) chunks.push(this.ensurePeriod(chunk));
+    }
+    return chunks;
+  }
+
+  private cleanTranscriptText(transcript: string, title?: string): string {
+    const text = transcript
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !(/^P\d+\s+/i.test(line) && line.length < 120))
+      .map((line) => line.replace(/^P\d+\s+/i, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const normalizedTitle = title?.replace(/\s+/g, ' ').trim();
+    if (normalizedTitle && text.startsWith(normalizedTitle)) {
+      return text.slice(normalizedTitle.length).trim();
+    }
+    return text;
+  }
+
+  private rankTranscriptSentences(job: AnalysisJob, sentences: string[]): RankedSentence[] {
+    const titleTokens = this.significantTokens(job.video.title);
+    const importantPattern =
+      /宣布|发布|推出|更新|确认|指出|显示|建议|调查|故障|异常|封禁|订阅|模型|开源|功能|插件|安全|漏洞|升级|用户|价格|测试|作弊|基准|agent|codex|openai|deepseek|google/gi;
+
+    return sentences
+      .map((text, index) => {
+        const lower = text.toLowerCase();
+        const tokenScore = titleTokens.reduce((score, token) => score + (lower.includes(token) ? 2 : 0), 0);
+        const keywordScore = (text.match(importantPattern) ?? []).length * 3;
+        const numberScore = /[0-9]/.test(text) ? 1.5 : 0;
+        const lengthScore = text.length >= 28 && text.length <= 220 ? 2 : text.length > 300 ? -1 : 0;
+        const positionScore = Math.max(0, 2 - index * 0.08);
+        return {
+          index,
+          text,
+          score: tokenScore + keywordScore + numberScore + lengthScore + positionScore,
+        };
+      })
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+  }
+
+  private extractFactSentences(sentences: string[], limit: number): string[] {
+    const factPattern = /[0-9]|宣布|发布|推出|更新|确认|指出|显示|建议|停止|开放|上线|修复|升级|调查|故障|漏洞|模型|功能|服务/;
+    return this.uniqueTexts(sentences.filter((sentence) => factPattern.test(sentence)))
+      .slice(0, limit)
+      .map((sentence) => this.ensurePeriod(this.truncateText(sentence, 180)));
+  }
+
+  private extractConclusion(sentences: string[], highlights: string[], parts: VideoPart[]): string {
+    const conclusionPattern = /总体|最后|因此|所以|建议|需要|应当|值得|风险|影响|问题|结论|官方|用户/;
+    const candidate =
+      [...sentences].reverse().find((sentence) => conclusionPattern.test(sentence)) ??
+      highlights.at(-1) ??
+      sentences.at(-1);
+    if (candidate) {
+      return this.ensurePeriod(this.truncateText(`综合转写内容，视频结论可概括为：${candidate}`, 260));
+    }
+    return `本次选择了 ${parts.length} 个分 P，当前报告基于转写文本做保守总结，细节请结合原视频核对。`;
+  }
+
+  private extractiveLimits(depth: string): {
+    overviewSentences: number;
+    overviewChars: number;
+    keyPoints: number;
+    chapters: number;
+    facts: number;
+  } {
+    if (depth === 'quick') {
+      return { overviewSentences: 3, overviewChars: 520, keyPoints: 4, chapters: 4, facts: 6 };
+    }
+    if (depth === 'deep') {
+      return { overviewSentences: 7, overviewChars: 1100, keyPoints: 8, chapters: 8, facts: 10 };
+    }
+    return { overviewSentences: 5, overviewChars: 780, keyPoints: 6, chapters: 6, facts: 8 };
+  }
+
+  private uniqueRankedSentences(items: RankedSentence[]): RankedSentence[] {
+    const seen = new Set<string>();
+    const result: RankedSentence[] = [];
+    for (const item of items) {
+      const key = this.normalizeSentence(item.text).slice(0, 80);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push(item);
+    }
+    return result;
+  }
+
+  private uniqueTexts(items: string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const item of items) {
+      const text = this.normalizeSentence(item);
+      const key = text.slice(0, 80);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push(text);
+    }
+    return result;
+  }
+
+  private significantTokens(text: string): string[] {
+    const tokens = text.match(/[A-Za-z][A-Za-z0-9+.-]{1,}|[\u4e00-\u9fa5]{2,}/g) ?? [];
+    return this.uniqueTexts(
+      tokens.flatMap((token) => {
+        const lower = token.toLowerCase();
+        if (/^[\u4e00-\u9fa5]+$/.test(token) && token.length > 8) {
+          return [lower.slice(0, 4), lower.slice(-4)];
+        }
+        return [lower];
+      }),
+    ).filter((token) => token.length >= 2);
+  }
+
+  private sentenceTitle(sentence: string): string {
+    const clause = sentence
+      .replace(/^(此外|同时|另外|接下来|最后|然后|并且|而且|不过|但是|官方称|官方宣布)/, '')
+      .split(/[，,。；;：:！？!?]/)[0]
+      .trim();
+    return this.truncateText(clause || '内容要点', 28);
+  }
+
+  private estimatedStartSeconds(
+    job: AnalysisJob,
+    sentenceIndex: number,
+    sentenceCount: number,
+    order: number,
+    chapterCount: number,
+  ): number {
+    if (!job.options.keepTimestamps) return 0;
+    if (sentenceCount <= 1) {
+      return Math.round((job.video.duration / Math.max(chapterCount, 1)) * order);
+    }
+    return Math.min(
+      job.video.duration,
+      Math.round((job.video.duration * sentenceIndex) / Math.max(sentenceCount - 1, 1)),
+    );
+  }
+
+  private cleanReportTitle(title: string): string {
+    return title.replace(/\s+/g, ' ').trim();
+  }
+
+  private normalizeSentence(sentence: string): string {
+    return sentence.replace(/\s+/g, ' ').trim();
+  }
+
+  private ensurePeriod(text: string): string {
+    const cleaned = text.trim();
+    if (!cleaned) return cleaned;
+    return /[。！？.!?]$/.test(cleaned) ? cleaned : `${cleaned}。`;
+  }
+
+  private truncateText(text: string, maxLength: number): string {
+    const cleaned = text.trim();
+    if (cleaned.length <= maxLength) return cleaned;
+    return `${cleaned.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
   }
 
   private withEvidenceNote(note: string, transcript: string, transcriptSource: TranscriptSource): string {
