@@ -114,6 +114,11 @@ Web 前端使用相对路径访问 `/api`，开发环境由 Vite 代理到 `http
 
 模型能力分为文本总结、ASR 识别、图片理解和视频理解。不同分析模式需要不同的模型组合。
 
+- 字幕优先 + ASR：需要文本总结和 ASR；开启关键截图时还需要图片理解。
+- 整段视频多模态：需要视频理解和 ASR；开启关键截图时还需要图片理解。
+
+整段视频多模态当前采用通用落地方案：优先读取公开字幕，没有字幕时走 ASR；开启关键截图时下载公开视频流、用 ffmpeg 抽帧，再把关键帧交给图片理解模型生成视觉证据，最后由视频理解模型汇总结构化报告。
+
 保存前会调用本地后端测试连接。API Key 只发送给本地后端，前端不会把密钥写入 `localStorage`。
 
 ### 2. 读取视频
@@ -168,6 +173,8 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 - 事实和案例
 - 作者结论或立场
 - 可信度提示
+- 关键截图
+- 推荐片段
 - 时间戳跳转
 - 基于报告继续追问
 - 导出 TXT
@@ -178,4 +185,127 @@ https://www.bilibili.com/video/BV1xxxxxxxxx
 前端使用浏览器 `localStorage` 保存非敏感界面数据。API Key 由本地后端处理，不写入浏览器本地存储。
 
 后端运行数据默认保存在 `apps/api/data/`，该目录不会提交到仓库。
+
+## ffmpeg 配置
+
+开启“生成关键截图”时，后端需要调用 ffmpeg 下载的视频流中抽取关键帧。未配置好 ffmpeg 时，任务会在“提取关键帧”阶段失败，并提示“未找到 ffmpeg”。如果关闭关键截图，字幕、ASR 和纯文本汇总不依赖 ffmpeg。
+
+后端按以下顺序查找 ffmpeg：
+
+1. `BVA_FFMPEG_PATH` 指向的可执行文件。
+2. 系统 `PATH` 中的 `ffmpeg`。
+3. 项目依赖 `ffmpeg-static` 自带的二进制文件。
+
+### 1. 先运行诊断命令
+
+每次安装或调整环境后，先运行：
+
+```powershell
+pnpm --filter @bilibili-video-analysis/api check:ffmpeg
+```
+
+看到类似下面的输出才表示可用：
+
+```text
+[ok] ffmpeg-static: ...\node_modules\ffmpeg-static\ffmpeg.exe
+ffmpeg version 6.1.1-essentials_build-www.gyan.dev
+```
+
+或：
+
+```text
+[ok] PATH: ffmpeg
+ffmpeg version ...
+```
+
+### 2. 推荐方式：使用 ffmpeg-static
+
+正常执行 `pnpm install` 后，`ffmpeg-static` 会自动下载对应平台的 `ffmpeg.exe`。如果诊断命令显示：
+
+```text
+[fail] ffmpeg-static: ...\ffmpeg.exe
+       file does not exist
+```
+
+说明安装时二进制没有下载成功。可以重新下载：
+
+```powershell
+pnpm --filter @bilibili-video-analysis/api rebuild ffmpeg-static
+pnpm --filter @bilibili-video-analysis/api check:ffmpeg
+```
+
+如果访问 GitHub 下载源较慢，需要先设置代理再 rebuild。示例：
+
+```powershell
+$env:HTTPS_PROXY="http://127.0.0.1:7890"
+$env:HTTP_PROXY="http://127.0.0.1:7890"
+pnpm --filter @bilibili-video-analysis/api rebuild ffmpeg-static
+pnpm --filter @bilibili-video-analysis/api check:ffmpeg
+```
+
+如果曾经下载到损坏的二进制，先清理本地缓存再重新下载：
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\ffmpeg-static-nodejs\Cache" -Recurse -Force -ErrorAction SilentlyContinue
+pnpm --filter @bilibili-video-analysis/api rebuild ffmpeg-static
+pnpm --filter @bilibili-video-analysis/api check:ffmpeg
+```
+
+### 3. 备选方式：安装系统 ffmpeg
+
+Windows 可以使用 winget 安装：
+
+```powershell
+winget install --id Gyan.FFmpeg -e
+```
+
+安装完成后，重新打开终端，再运行：
+
+```powershell
+where.exe ffmpeg
+ffmpeg -version
+pnpm --filter @bilibili-video-analysis/api check:ffmpeg
+```
+
+如果 `where.exe ffmpeg` 找不到命令，说明系统 `PATH` 还没有生效；重启终端或手动把 ffmpeg 的 `bin` 目录加入系统 `PATH`。
+
+### 4. 手动指定 BVA_FFMPEG_PATH
+
+如果你手动下载了 ffmpeg，或不想改系统 `PATH`，可以在启动后端前指定完整路径：
+
+```powershell
+$env:BVA_FFMPEG_PATH="D:\Tools\ffmpeg\bin\ffmpeg.exe"
+pnpm --filter @bilibili-video-analysis/api start
+```
+
+也可以永久写入当前用户环境变量：
+
+```powershell
+[Environment]::SetEnvironmentVariable("BVA_FFMPEG_PATH", "D:\Tools\ffmpeg\bin\ffmpeg.exe", "User")
+```
+
+写入后需要重新打开终端，并重启后端服务。
+
+### 5. 常见错误
+
+| 提示 | 原因 | 处理方式 |
+|---|---|---|
+| `未找到 ffmpeg` / `spawn ENOENT` | `PATH` 中没有 ffmpeg，且 `ffmpeg-static` 不存在 | 安装系统 ffmpeg，或重新执行 `pnpm --filter @bilibili-video-analysis/api rebuild ffmpeg-static` |
+| `ffmpeg.exe file does not exist` | `ffmpeg-static` 包安装了，但二进制下载失败 | 清理 `ffmpeg-static-nodejs\Cache` 后重新执行 rebuild，必要时带代理 |
+| `spawn EFTYPE` / `不是有效的 Win32 应用程序` | 下载到了损坏或不适合当前系统的二进制 | 清理缓存并重新下载 `ffmpeg-static`，或设置 `BVA_FFMPEG_PATH` 指向可运行的 `ffmpeg.exe` |
+| 修改环境变量后仍失败 | 后端进程还在使用旧环境 | 关闭并重新启动后端服务 |
+
+常用环境变量：
+
+```env
+BVA_FFMPEG_PATH=ffmpeg
+BVA_RUNTIME_DIR=apps/api/data/runtime
+BVA_MEDIA_CACHE_TTL_HOURS=24
+BVA_MAX_VIDEO_MB=500
+BVA_MAX_AUDIO_MB=100
+BVA_FRAME_INTERVAL_SECONDS=30
+BVA_MAX_FRAMES=20
+BVA_ASR_SEGMENT_SECONDS=120
+BVA_FFMPEG_TIMEOUT_SECONDS=120
+```
 
