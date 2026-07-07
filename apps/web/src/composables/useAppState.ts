@@ -23,6 +23,7 @@ import {
   testAndSaveModelConfig,
 } from '../services/modelService'
 import { fetchVideoInfo, isValidBvidInput } from '../services/videoService'
+import { formatDuration } from '../utils/format'
 import type {
   AnalysisDepth,
   AnalysisJob,
@@ -109,7 +110,9 @@ export function useAppState() {
     return state.modelConfigs.filter((model) => model.provider === state.modelProviderFilter)
   })
   const requiredCapabilities = computed<ModelCapability[]>(() => {
-    if (state.selectedMode === 'multimodal') return ['video']
+    if (state.selectedMode === 'multimodal') {
+      return state.screenshotsEnabled ? ['video', 'asr', 'image'] : ['video', 'asr']
+    }
     return state.screenshotsEnabled ? ['text', 'asr', 'image'] : ['text', 'asr']
   })
   const missingCapabilities = computed(() =>
@@ -419,6 +422,12 @@ export function useAppState() {
       .map((chapter) => `${chapter.title}\n${chapter.summary}`)
       .join('\n\n')
     const pointsText = report.keyPoints.map((point) => `${point.title}\n${point.detail}`).join('\n\n')
+    const screenshotText = report.screenshots
+      .map((screenshot) => `${formatDuration(screenshot.timestampSeconds)}\n${screenshot.description}\n${screenshot.url}`)
+      .join('\n\n')
+    const segmentText = report.recommendedSegments
+      .map((segment) => `${formatDuration(segment.startSeconds)} ${segment.title}\n${segment.summary}`)
+      .join('\n\n')
     const content = [
       report.video.title,
       report.video.url,
@@ -434,6 +443,12 @@ export function useAppState() {
       '',
       '核心观点',
       pointsText,
+      '',
+      '关键截图',
+      screenshotText || '无',
+      '',
+      '推荐片段',
+      segmentText || '无',
       '',
       '可信度提示',
       report.confidenceNotes,

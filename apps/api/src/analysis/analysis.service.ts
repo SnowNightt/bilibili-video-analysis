@@ -6,7 +6,13 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdir, readFile, readdir, rm, stat, unlink } from 'node:fs/promises';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   ACTIVE_JOB_STATUSES,
   ANALYSIS_DEPTHS,
@@ -60,6 +66,15 @@ interface BilibiliPlayUrlResponse {
         backup_url?: string[];
         bandwidth?: number;
       }>;
+      video?: Array<{
+        baseUrl?: string;
+        base_url?: string;
+        backupUrl?: string[];
+        backup_url?: string[];
+        bandwidth?: number;
+        codecs?: string;
+        id?: number;
+      }>;
     };
   };
 }
@@ -73,6 +88,21 @@ interface SubtitleItem {
 interface DownloadedAudio {
   bytes: Buffer;
   fileName: string;
+}
+
+interface DownloadedVideo {
+  filePath: string;
+  fileName: string;
+}
+
+interface FrameEvidence {
+  partPage: number;
+  partTitle: string;
+  timestampSeconds: number;
+  localSeconds: number;
+  filePath: string;
+  publicUrl: string;
+  description: string;
 }
 
 interface ExtractiveReportDraft {
@@ -120,6 +150,12 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
         job.errorMessage = '服务重启后任务已中断，请重新创建分析任务。';
         job.currentStage = '任务已中断。';
         job.completedAt = new Date().toISOString();
+      }
+      if (job.status === 'failed' && job.errorMessage) {
+        job.errorMessage = this.normalizeStoredFailure(job.errorMessage);
+      }
+      if (job.status === 'failed' && job.errorMessage && job.currentStage.startsWith('任务执行失败')) {
+        job.currentStage = `任务执行失败：${this.truncateText(job.errorMessage, 80)}`;
       }
       this.jobs.set(job.id, job);
     }
@@ -220,6 +256,31 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     return report;
   }
 
+  async getRuntimeAsset(jobId: string, fileName: string): Promise<{ filePath: string; mimeType: string }> {
+    if (!/^[0-9a-f-]{36}$/i.test(jobId) || !/^[A-Za-z0-9_.-]+$/.test(fileName)) {
+      throw new NotFoundException({ message: '资源不存在。' });
+    }
+
+    const framesDir = this.jobFramesDir(jobId);
+    const filePath = resolve(framesDir, basename(fileName));
+    if (!this.isPathInside(framesDir, filePath)) {
+      throw new NotFoundException({ message: '资源不存在。' });
+    }
+
+    try {
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error('not a file');
+    } catch {
+      throw new NotFoundException({ message: '资源不存在。' });
+    }
+
+    const extension = extname(fileName).toLowerCase();
+    return {
+      filePath,
+      mimeType: extension === '.png' ? 'image/png' : 'image/jpeg',
+    };
+  }
+
   async answerQuestion(reportId: string, payload: unknown): Promise<ConversationMessage> {
     const report = this.getReport(reportId);
     assertPlainObject(payload, '问题不能为空。');
@@ -265,6 +326,8 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
   private async runJob(id: string): Promise<void> {
     let transcript = '';
     let transcriptSource: TranscriptSource = 'none';
+    let visualEvidence: FrameEvidence[] = [];
+    let completedSuccessfully = false;
     try {
       const job = this.getJob(id);
       await this.advance(id, 'fetching_video', 8, `正在确认 ${job.bvid} 的视频信息。`);
@@ -281,15 +344,23 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (job.options.mode === 'multimodal') {
-        await this.advance(id, 'extracting_audio', 34, '正在整理音频和字幕上下文。');
+        if (!transcript) {
+          await this.advance(id, 'extracting_audio', 34, '未找到公开字幕，正在准备音频转写链路。');
+          await this.advance(id, 'transcribing', 52, '正在调用 ASR 模型转写音频。');
+          transcript = await this.transcribeSelectedParts(this.getJob(id));
+          transcriptSource = 'asr';
+        } else {
+          await this.advance(id, 'extracting_audio', 34, '已取得公开字幕，正在整理音频和字幕上下文。');
+        }
       }
 
       if (job.options.generateScreenshots) {
         await this.advance(id, 'extracting_frames', 68, '正在提取关键画面并整理截图上下文。');
+        visualEvidence = await this.prepareVisualEvidence(this.getJob(id));
       }
 
       await this.advance(id, 'analyzing', 82, '正在调用模型生成结构化分析。');
-      const report = await this.generateReport(this.getJob(id), transcript, transcriptSource);
+      const report = await this.generateReport(this.getJob(id), transcript, transcriptSource, visualEvidence);
 
       await this.advance(id, 'generating_report', 94, '正在保存结构化报告。');
       this.reports.set(report.id, report);
@@ -303,6 +374,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       completed.completedAt = new Date().toISOString();
       completed.reportId = report.id;
       await this.persistJobs();
+      completedSuccessfully = true;
       this.logger.log(`Analysis job completed: ${id}`);
     } catch (error) {
       if (error instanceof JobCancelledError) return;
@@ -310,11 +382,14 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       if (!job || job.status === 'cancelled') return;
       job.status = 'failed';
       job.errorMessage = this.readableFailure(error);
-      job.currentStage = '任务执行失败。';
+      job.currentStage = `任务执行失败：${this.truncateText(job.errorMessage, 80)}`;
       job.completedAt = new Date().toISOString();
       await this.persistJobs();
       this.logger.warn(`Analysis job failed: ${id}`);
     } finally {
+      if (!completedSuccessfully) {
+        await this.cleanupJobRuntimeData(id);
+      }
       this.cancelRequested.delete(id);
     }
   }
@@ -420,17 +495,195 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       .find((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url));
     if (!audioUrl) throw new Error('未能获取该视频分 P 的公开音频流。');
 
-    const bytes = await this.fetchBinary(audioUrl, 50 * 1024 * 1024, job.video.url);
+    const bytes = await this.fetchBinary(audioUrl, this.maxAudioBytes(), job.video.url);
     return {
       bytes,
       fileName: `${job.bvid}-p${part.page}.m4a`,
     };
   }
 
+  private async prepareVisualEvidence(job: AnalysisJob): Promise<FrameEvidence[]> {
+    const maxFrames = Math.min(job.options.maxScreenshots, this.envNumber('BVA_MAX_FRAMES', 20, 0, 100));
+    if (!job.options.generateScreenshots || maxFrames <= 0) return [];
+
+    const imageProfileId = job.options.modelProfileIds.image;
+    if (!imageProfileId) throw new BadRequestException({ message: '缺少图片理解模型配置。' });
+
+    await mkdir(this.jobFramesDir(job.id), { recursive: true });
+    await mkdir(this.jobVideosDir(job.id), { recursive: true });
+
+    const selected = job.video.parts
+      .filter((part) => job.options.selectedPartCids.includes(part.cid))
+      .sort((a, b) => a.page - b.page);
+    const frames: FrameEvidence[] = [];
+
+    for (const part of selected) {
+      this.ensureActive(this.getJob(job.id));
+      if (frames.length >= maxFrames) break;
+      const video = await this.downloadPartVideo(job, part);
+      try {
+        const extracted = await this.extractPartFrames(job, part, video, maxFrames - frames.length);
+        frames.push(...extracted);
+      } finally {
+        await this.safeUnlink(video.filePath);
+      }
+    }
+
+    if (!frames.length) throw new Error('未能从公开视频流中提取关键帧。');
+    return this.describeFrames(job, frames);
+  }
+
+  private async downloadPartVideo(job: AnalysisJob, part: VideoPart): Promise<DownloadedVideo> {
+    const playUrl = await this.fetchJson<BilibiliPlayUrlResponse>(
+      `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(job.bvid)}&cid=${encodeURIComponent(String(part.cid))}&fnval=16&fourk=0`,
+      8000,
+      job.video.url,
+    );
+    if (playUrl.code !== 0) {
+      throw new Error(playUrl.message || 'Bilibili 视频地址获取失败。');
+    }
+
+    const videoUrl = this.bestMediaUrl(playUrl.data?.dash?.video ?? []);
+    if (!videoUrl) throw new Error('未能获取该视频分 P 的公开视频流。');
+
+    const fileName = `${job.bvid}-p${part.page}-${part.cid}.mp4`;
+    const filePath = join(this.jobVideosDir(job.id), fileName);
+    await this.fetchToFile(videoUrl, filePath, this.maxVideoBytes(), job.video.url, '视频');
+    return { filePath, fileName };
+  }
+
+  private async extractPartFrames(
+    job: AnalysisJob,
+    part: VideoPart,
+    video: DownloadedVideo,
+    remaining: number,
+  ): Promise<FrameEvidence[]> {
+    const targets = this.frameTargets(part, remaining);
+    const frames: FrameEvidence[] = [];
+    const partStart = this.partStartSeconds(job, part);
+
+    for (let index = 0; index < targets.length; index += 1) {
+      this.ensureActive(this.getJob(job.id));
+      const localSeconds = targets[index];
+      const timestampSeconds = Math.max(0, Math.round(partStart + localSeconds));
+      const fileName = `p${part.page}-${String(index + 1).padStart(3, '0')}-${timestampSeconds}s.jpg`;
+      const filePath = join(this.jobFramesDir(job.id), fileName);
+      await this.runFfmpeg(
+        [
+          '-y',
+          '-ss',
+          localSeconds.toFixed(2),
+          '-i',
+          video.filePath,
+          '-frames:v',
+          '1',
+          '-vf',
+          'scale=720:-2',
+          '-q:v',
+          '4',
+          filePath,
+        ],
+        `P${part.page} ${this.formatSeconds(timestampSeconds)} 关键帧抽取失败`,
+      );
+      frames.push({
+        partPage: part.page,
+        partTitle: part.title,
+        timestampSeconds,
+        localSeconds,
+        filePath,
+        publicUrl: this.publicFrameUrl(job.id, fileName),
+        description: `P${part.page} ${this.formatSeconds(timestampSeconds)} 的关键帧。`,
+      });
+    }
+
+    return frames;
+  }
+
+  private frameTargets(part: VideoPart, remaining: number): number[] {
+    if (remaining <= 0) return [];
+    const interval = this.envNumber('BVA_FRAME_INTERVAL_SECONDS', 30, 1, 3600);
+    const desired = Math.max(1, Math.ceil(Math.max(part.duration, 1) / interval));
+    const count = Math.min(remaining, desired);
+    const lastUsableSecond = Math.max(part.duration - 0.5, 0);
+    return Array.from({ length: count }, (_, index) => {
+      const centered = ((index + 0.5) * Math.max(part.duration, 1)) / count;
+      return Math.min(lastUsableSecond, Math.max(0, centered));
+    });
+  }
+
+  private async describeFrames(job: AnalysisJob, frames: FrameEvidence[]): Promise<FrameEvidence[]> {
+    const imageProfileId = job.options.modelProfileIds.image;
+    if (!imageProfileId) throw new BadRequestException({ message: '缺少图片理解模型配置。' });
+    const { config, apiKey } = await this.modelConfigs.getConfigWithApiKey(imageProfileId, 'image');
+    const described: FrameEvidence[] = [];
+
+    for (const frame of frames) {
+      this.ensureActive(this.getJob(job.id));
+      const imageUrl = await this.imageDataUrl(frame.filePath);
+      let description: string;
+      try {
+        description = await this.client.chat(
+          config,
+          apiKey,
+          [
+            {
+              role: 'system',
+              content:
+                '你是视频关键帧图片理解助手。只描述图中可见事实，包括场景、人物、界面、动作和屏幕文字；不要臆测视频上下文。',
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `请用${job.options.outputLanguage}概括这张关键帧，控制在 120 字以内。时间点：P${frame.partPage} ${this.formatSeconds(frame.timestampSeconds)}。`,
+                },
+                { type: 'image_url', image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          { temperature: 0.1, maxTokens: 220 },
+        );
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : '图片理解模型调用失败。';
+        throw new Error(`P${frame.partPage} ${this.formatSeconds(frame.timestampSeconds)} 关键帧图片理解失败：${message}`);
+      }
+
+      described.push({
+        ...frame,
+        description: this.truncateText(description.replace(/^```[\s\S]*?```$/g, '').trim(), 240) || frame.description,
+      });
+    }
+
+    return described;
+  }
+
+  private bestMediaUrl(
+    items: Array<{
+      baseUrl?: string;
+      base_url?: string;
+      backupUrl?: string[];
+      backup_url?: string[];
+      bandwidth?: number;
+    }>,
+  ): string | undefined {
+    return items
+      .slice()
+      .sort((a, b) => Number(b.bandwidth ?? 0) - Number(a.bandwidth ?? 0))
+      .flatMap((item) => [
+        item.baseUrl,
+        item.base_url,
+        ...(item.backupUrl ?? []),
+        ...(item.backup_url ?? []),
+      ])
+      .find((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url));
+  }
+
   private async generateReport(
     job: AnalysisJob,
     transcript: string,
     transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
   ): Promise<AnalysisReport> {
     const capability: ModelCapability = job.options.mode === 'multimodal' ? 'video' : 'text';
     const profileId = job.options.modelProfileIds[capability];
@@ -446,11 +699,11 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
           {
             role: 'system',
             content:
-              '你是严谨的视频分析助手。必须输出合法 JSON，不要使用 Markdown 代码块。所有结论只能来自用户提供的视频元数据、分 P 信息和字幕上下文；无法确认的内容写入 confidenceNotes。',
+              '你是严谨的视频分析助手。必须输出合法 JSON，不要使用 Markdown 代码块。所有结论只能来自用户提供的视频元数据、分 P 信息、字幕或转写上下文、关键帧视觉证据；无法确认的内容写入 confidenceNotes。',
           },
           {
             role: 'user',
-            content: this.reportPrompt(job, transcript, transcriptSource),
+            content: this.reportPrompt(job, transcript, transcriptSource, visualEvidence),
           },
         ],
         {
@@ -462,13 +715,13 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       modelJson = this.parseJsonObject(response);
     } catch (error) {
       if (this.isModelFormatError(error)) {
-        modelJson = await this.retryStructuredReport(config, apiKey, job, transcript, transcriptSource);
+        modelJson = await this.retryStructuredReport(config, apiKey, job, transcript, transcriptSource, visualEvidence);
       } else {
         throw error;
       }
     }
 
-    return this.normalizeReport(modelJson, job, transcript, transcriptSource);
+    return this.normalizeReport(modelJson, job, transcript, transcriptSource, visualEvidence);
   }
 
   private async retryStructuredReport(
@@ -477,6 +730,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     job: AnalysisJob,
     transcript: string,
     transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
   ): Promise<unknown | undefined> {
     try {
       const response = await this.client.chat(
@@ -490,7 +744,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
           },
           {
             role: 'user',
-            content: this.compactReportPrompt(job, transcript, transcriptSource),
+            content: this.compactReportPrompt(job, transcript, transcriptSource, visualEvidence),
           },
         ],
         {
@@ -511,7 +765,12 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     return /json|格式|unexpected|expected|position|unterminated|response_format|schema/i.test(message);
   }
 
-  private reportPrompt(job: AnalysisJob, transcript: string, transcriptSource: TranscriptSource): string {
+  private reportPrompt(
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
+  ): string {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
     return [
       `输出语言：${job.options.outputLanguage}`,
@@ -522,13 +781,19 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `选择分 P：${JSON.stringify(selectedParts)}`,
       `内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}`,
       `可用字幕或转写上下文：${transcript || '未读取到公开字幕。请只基于已提供元数据生成保守报告。'}`,
-      '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters, keyPoints, facts 和 conclusion；不要只复述标题、简介或分 P 信息。',
+      `关键帧视觉证据：${this.visualEvidenceForPrompt(visualEvidence)}`,
+      '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters, keyPoints, facts 和 conclusion；如果“关键帧视觉证据”非空，必须用它补充画面、操作、屏幕文字和推荐截图说明；不要只复述标题、简介或分 P 信息。',
       '请返回 JSON，字段必须包含 summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
-      'chapters/recommendedSegments 的元素字段为 title, startSeconds, summary；keyPoints 元素字段为 title, detail；screenshots 元素字段为 url, timestampSeconds, description。',
+      'chapters/recommendedSegments 的元素字段为 title, startSeconds, summary；keyPoints 元素字段为 title, detail；screenshots 元素字段为 url, timestampSeconds, description。screenshots 只能使用关键帧视觉证据中给出的 url；没有真实关键帧时返回 []。',
     ].join('\n\n');
   }
 
-  private compactReportPrompt(job: AnalysisJob, transcript: string, transcriptSource: TranscriptSource): string {
+  private compactReportPrompt(
+    job: AnalysisJob,
+    transcript: string,
+    transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
+  ): string {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
     return [
       `输出语言：${job.options.outputLanguage}`,
@@ -537,9 +802,10 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `选择分 P：${JSON.stringify(selectedParts)}`,
       `内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}`,
       `内容上下文：${this.compactTranscriptForPrompt(transcript, job.video.title) || '未读取到字幕或转写。'}`,
-      '请基于内容上下文做分析总结，不要复述整段转写。',
+      `关键帧视觉证据：${this.visualEvidenceForPrompt(visualEvidence)}`,
+      '请基于内容上下文和关键帧视觉证据做分析总结，不要复述整段转写。',
       '只返回 JSON 对象，字段必须是：summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
-      'summary 为 1 句话；overview 为 1 段综合概览；chapters 和 recommendedSegments 最多 5 项，每项包含 title, startSeconds, summary；keyPoints 最多 6 项，每项包含 title, detail；facts 最多 8 条；screenshots 无真实截图时返回 []。',
+      'summary 为 1 句话；overview 为 1 段综合概览；chapters 和 recommendedSegments 最多 5 项，每项包含 title, startSeconds, summary；keyPoints 最多 6 项，每项包含 title, detail；facts 最多 8 条；screenshots 只能使用关键帧视觉证据中的真实 url；无真实截图时返回 []。',
     ].join('\n\n');
   }
 
@@ -548,11 +814,13 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     job: AnalysisJob,
     transcript: string,
     transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
   ): AnalysisReport {
-    const fallback = this.fallbackReport(job, transcript, transcriptSource);
+    const fallback = this.fallbackReport(job, transcript, transcriptSource, visualEvidence);
     if (!value || typeof value !== 'object') return fallback;
     const source = value as Partial<AnalysisReport>;
     const confidenceNotes = this.textOr(source.confidenceNotes, fallback.confidenceNotes);
+    const realScreenshots = this.screenshotsFromVisualEvidence(visualEvidence);
     return {
       ...fallback,
       summary: this.textOr(source.summary, fallback.summary),
@@ -561,9 +829,14 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       keyPoints: this.pointsOr(source.keyPoints, fallback.keyPoints),
       facts: this.stringArrayOr(source.facts, fallback.facts),
       conclusion: this.textOr(source.conclusion, fallback.conclusion),
-      screenshots: this.screenshotsOr(source.screenshots, fallback.screenshots),
+      screenshots: realScreenshots.length
+        ? this.trustedScreenshotsOr(source.screenshots, realScreenshots)
+        : this.screenshotsOr(source.screenshots, fallback.screenshots),
       recommendedSegments: this.chaptersOr(source.recommendedSegments, fallback.recommendedSegments),
-      confidenceNotes: this.withEvidenceNote(confidenceNotes, transcript, transcriptSource),
+      confidenceNotes: this.withVisualEvidenceNote(
+        this.withEvidenceNote(confidenceNotes, transcript, transcriptSource),
+        visualEvidence,
+      ),
     };
   }
 
@@ -571,6 +844,7 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     job: AnalysisJob,
     transcript: string,
     transcriptSource: TranscriptSource,
+    visualEvidence: FrameEvidence[],
   ): AnalysisReport {
     const selectedParts = job.video.parts.filter((part) => job.options.selectedPartCids.includes(part.cid));
     const hasTranscript = Boolean(transcript.trim());
@@ -587,7 +861,17 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `视频总时长：${job.video.duration} 秒`,
       `已选择分 P：${selectedParts.map((part) => `P${part.page} ${part.title}`).join('、')}`,
       hasTranscript ? `内容上下文来源：${sourceLabel}，长度 ${transcript.length} 字符。` : '',
+      visualEvidence.length ? `关键帧视觉证据：${visualEvidence.length} 张。` : '',
     ].filter(Boolean);
+    const visualSummary = this.visualEvidenceSummary(visualEvidence);
+    const fallbackOverview =
+      evidence
+        ? `已取得${sourceLabel}，但文本模型没有返回可解析的结构化 JSON；以下为内容上下文片段：\n${evidence}`
+        : visualSummary
+          ? `已取得关键帧视觉证据，但模型没有返回可解析的结构化 JSON；以下为画面证据摘要：\n${visualSummary}`
+          : job.video.description?.trim() ||
+            `该视频由 ${job.video.ownerName} 发布，时长约 ${Math.round(job.video.duration / 60)} 分钟。`;
+    const realScreenshots = this.screenshotsFromVisualEvidence(visualEvidence);
 
     return {
       id: randomUUID(),
@@ -597,19 +881,14 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       summary:
         extracted?.summary ??
         `《${job.video.title}》的分析已完成，报告基于视频元数据${hasTranscript ? `和${sourceLabel}` : ''}生成。`,
-      overview: extracted?.overview
-        ? extracted.overview
-        : evidence
-          ? `已取得${sourceLabel}，但文本模型没有返回可解析的结构化 JSON；以下为内容上下文片段：\n${evidence}`
-        : job.video.description?.trim() ||
-          `该视频由 ${job.video.ownerName} 发布，时长约 ${Math.round(job.video.duration / 60)} 分钟。`,
+      overview: extracted?.overview ? extracted.overview : fallbackOverview,
       chapters,
       keyPoints: extracted?.keyPoints.length
         ? extracted.keyPoints
         : [
             {
               title: hasTranscript ? '内容上下文' : '内容主题',
-              detail: evidence || `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
+              detail: evidence || visualSummary || `视频标题和分 P 信息显示，本次分析围绕“${job.video.title}”展开。`,
             },
             {
               title: '处理范围',
@@ -618,13 +897,22 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
           ],
       facts: [...metadataFacts, ...(extracted?.facts ?? [])].slice(0, 12),
       conclusion: extracted?.conclusion ?? '当前报告未从视频内容中提取到明确的作者结论或立场，请结合原视频核对。',
-      screenshots: this.fallbackScreenshots(job),
+      screenshots: realScreenshots.length ? realScreenshots : this.fallbackScreenshots(job),
       recommendedSegments: chapters.slice(0, Math.min(3, chapters.length)),
       confidenceNotes: hasTranscript
         ? extracted
-          ? `文本模型没有返回可解析的结构化 JSON；系统已改用本地规则从${sourceLabel}中提炼摘要、要点和结论。报告可用于快速理解主题，但章节时间和细节仍需结合原视频核对。`
-          : `报告基于视频元数据和${sourceLabel}生成；模型结构化输出不可解析时会保留上下文片段作为证据。未能验证画面细节。`
-        : '未读取到公开字幕或真实媒体内容，报告主要基于视频元数据和分 P 信息生成；具体观点需以原视频为准。',
+          ? this.withVisualEvidenceNote(
+              `文本模型没有返回可解析的结构化 JSON；系统已改用本地规则从${sourceLabel}中提炼摘要、要点和结论。报告可用于快速理解主题，但章节时间和细节仍需结合原视频核对。`,
+              visualEvidence,
+            )
+          : this.withVisualEvidenceNote(
+              `报告基于视频元数据和${sourceLabel}生成；模型结构化输出不可解析时会保留上下文片段作为证据。`,
+              visualEvidence,
+            )
+        : this.withVisualEvidenceNote(
+            '未读取到公开字幕或真实音频转写，报告主要基于视频元数据、分 P 信息和可用视觉证据生成；具体观点需以原视频为准。',
+            visualEvidence,
+          ),
     };
   }
 
@@ -908,6 +1196,51 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     ];
   }
 
+  private screenshotsFromVisualEvidence(visualEvidence: FrameEvidence[]): ReportScreenshot[] {
+    return visualEvidence.map((frame) => ({
+      url: frame.publicUrl,
+      timestampSeconds: frame.timestampSeconds,
+      description: frame.description,
+    }));
+  }
+
+  private trustedScreenshotsOr(value: unknown, trusted: ReportScreenshot[]): ReportScreenshot[] {
+    if (!Array.isArray(value)) return trusted;
+    const parsed = this.screenshotsOr(value, []);
+    const parsedByUrl = new Map(parsed.map((item) => [item.url, item]));
+    return trusted.map((item) => {
+      const modelItem = parsedByUrl.get(item.url);
+      return modelItem ? { ...item, description: modelItem.description || item.description } : item;
+    });
+  }
+
+  private visualEvidenceForPrompt(visualEvidence: FrameEvidence[]): string {
+    if (!visualEvidence.length) return '[]';
+    return JSON.stringify(
+      visualEvidence.map((frame) => ({
+        url: frame.publicUrl,
+        part: `P${frame.partPage} ${frame.partTitle}`,
+        timestampSeconds: frame.timestampSeconds,
+        description: this.truncateText(frame.description, 320),
+      })),
+    );
+  }
+
+  private visualEvidenceSummary(visualEvidence: FrameEvidence[]): string {
+    return visualEvidence
+      .slice(0, 8)
+      .map(
+        (frame) =>
+          `P${frame.partPage} ${this.formatSeconds(frame.timestampSeconds)}：${this.truncateText(frame.description, 160)}`,
+      )
+      .join('\n');
+  }
+
+  private withVisualEvidenceNote(note: string, visualEvidence: FrameEvidence[]): string {
+    if (!visualEvidence.length) return note;
+    return `${note}\n\n关键帧视觉证据：已从公开视频流抽取并理解 ${visualEvidence.length} 张关键帧。`;
+  }
+
   private fallbackAnswer(report: AnalysisReport, question: string): string {
     if (/结论|总结|主要|summary/i.test(question)) {
       return `${report.summary}\n\n${report.conclusion}`;
@@ -918,6 +1251,210 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
         .join('\n');
     }
     return `当前报告中可确认的信息是：${report.overview}\n\n如果你问到的细节没有出现在报告、章节或事实列表中，我无法从当前视频确认。`;
+  }
+
+  private async imageDataUrl(filePath: string): Promise<string> {
+    const bytes = await readFile(filePath);
+    return `data:image/jpeg;base64,${bytes.toString('base64')}`;
+  }
+
+  private async fetchToFile(
+    url: string,
+    filePath: string,
+    maxBytes: number,
+    referer: string,
+    label: string,
+  ): Promise<number> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let received = 0;
+    try {
+      await mkdir(dirname(filePath), { recursive: true });
+      const response = await fetch(url, {
+        headers: {
+          Referer: referer,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Bilibili ${label}下载失败。`);
+
+      const length = Number(response.headers.get('content-length') ?? 0);
+      if (length > maxBytes) throw new Error(`${label}文件过大，当前最大支持 ${Math.round(maxBytes / 1024 / 1024)} MB。`);
+      if (!response.body) throw new Error(`Bilibili ${label}下载响应为空。`);
+
+      const limiter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          received += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk);
+          if (received > maxBytes) {
+            callback(new Error(`${label}文件过大，当前最大支持 ${Math.round(maxBytes / 1024 / 1024)} MB。`));
+            return;
+          }
+          callback(null, chunk);
+        },
+      });
+
+      await pipeline(Readable.fromWeb(response.body as never), limiter, createWriteStream(filePath));
+      if (received === 0) throw new Error(`Bilibili ${label}下载为空。`);
+      return received;
+    } catch (error) {
+      await this.safeUnlink(filePath);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Bilibili ${label}下载超时。`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async runFfmpeg(args: string[], context: string): Promise<void> {
+    const timeoutMs = this.envNumber('BVA_FFMPEG_TIMEOUT_SECONDS', 120, 5, 1800) * 1000;
+    const ffmpegPath = this.resolveFfmpegPath();
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      let stderr = '';
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (error) rejectPromise(error);
+        else resolvePromise();
+      };
+      const child = spawn(ffmpegPath, args, { windowsHide: true });
+      timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        settle(new Error(`${context}：ffmpeg 执行超时。`));
+      }, timeoutMs);
+
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr = `${stderr}${chunk.toString('utf8')}`.slice(-3000);
+      });
+      child.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' || error.code === 'EFTYPE') {
+          settle(new Error(this.ffmpegUnavailableMessage(error.code)));
+          return;
+        }
+        settle(error);
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          settle();
+          return;
+        }
+        const detail = stderr.trim() ? this.truncateText(stderr.trim().replace(/\s+/g, ' '), 600) : `退出码 ${code}`;
+        settle(new Error(`${context}：${detail}`));
+      });
+    });
+  }
+
+  private resolveFfmpegPath(): string {
+    const configured = process.env.BVA_FFMPEG_PATH?.trim();
+    if (configured) return configured;
+    if (this.commandExists('ffmpeg')) return 'ffmpeg';
+    try {
+      const staticPath = require('ffmpeg-static') as string | null;
+      if (staticPath) return staticPath;
+    } catch {
+      // Fall through to PATH lookup.
+    }
+    return 'ffmpeg';
+  }
+
+  private commandExists(command: string): boolean {
+    const paths = (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':');
+    const extensions = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
+    for (const basePath of paths) {
+      if (!basePath.trim()) continue;
+      for (const extension of extensions) {
+        const candidate = resolve(basePath, `${command}${extension.toLowerCase() === '.exe' ? '.exe' : extension}`);
+        try {
+          const candidateStat = require('node:fs').statSync(candidate) as { isFile: () => boolean };
+          if (candidateStat.isFile()) return true;
+        } catch {
+          // Keep searching PATH.
+        }
+      }
+    }
+    return false;
+  }
+
+  private ffmpegUnavailableMessage(code?: string): string {
+    if (code === 'EFTYPE') {
+      return 'ffmpeg 可执行文件格式不适用于当前系统。请安装系统 ffmpeg，或将 BVA_FFMPEG_PATH 指向可运行的 ffmpeg.exe。';
+    }
+    return '未找到 ffmpeg，请安装 ffmpeg、配置 BVA_FFMPEG_PATH，或重新安装可用的 ffmpeg-static。';
+  }
+
+  private runtimeRoot(): string {
+    const configured = process.env.BVA_RUNTIME_DIR?.trim();
+    if (!configured) return this.storage.dataPath('runtime');
+    return isAbsolute(configured) ? resolve(configured) : resolve(process.cwd(), configured);
+  }
+
+  private jobRuntimeDir(jobId: string): string {
+    return resolve(this.runtimeRoot(), jobId);
+  }
+
+  private jobFramesDir(jobId: string): string {
+    return resolve(this.jobRuntimeDir(jobId), 'frames');
+  }
+
+  private jobVideosDir(jobId: string): string {
+    return resolve(this.jobRuntimeDir(jobId), 'video');
+  }
+
+  private publicFrameUrl(jobId: string, fileName: string): string {
+    return `/api/analysis/assets/${encodeURIComponent(jobId)}/${encodeURIComponent(fileName)}`;
+  }
+
+  private partStartSeconds(job: AnalysisJob, target: VideoPart): number {
+    let cursor = 0;
+    for (const part of [...job.video.parts].sort((a, b) => a.page - b.page)) {
+      if (part.cid === target.cid) return cursor;
+      cursor += part.duration;
+    }
+    return 0;
+  }
+
+  private maxAudioBytes(): number {
+    return this.envNumber('BVA_MAX_AUDIO_MB', 100, 1, 2048) * 1024 * 1024;
+  }
+
+  private maxVideoBytes(): number {
+    return this.envNumber('BVA_MAX_VIDEO_MB', 500, 1, 4096) * 1024 * 1024;
+  }
+
+  private formatSeconds(totalSeconds: number): string {
+    const rounded = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const seconds = rounded % 60;
+    const base = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    return hours > 0 ? `${hours}:${base}` : base;
+  }
+
+  private envNumber(name: string, fallback: number, min: number, max: number): number {
+    const value = Number(process.env[name]);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  }
+
+  private isPathInside(parent: string, child: string): boolean {
+    const parentPath = resolve(parent);
+    const childPath = resolve(child);
+    const path = relative(parentPath, childPath);
+    return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+  }
+
+  private async safeUnlink(filePath: string): Promise<void> {
+    try {
+      await unlink(filePath);
+    } catch {
+      // Best-effort cleanup.
+    }
   }
 
   private parseJsonObject(raw: string): unknown {
@@ -1025,7 +1562,9 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
 
     const required: ModelCapability[] =
       options.mode === 'multimodal'
-        ? ['video']
+        ? options.generateScreenshots
+          ? ['video', 'asr', 'image']
+          : ['video', 'asr']
         : options.generateScreenshots
           ? ['text', 'asr', 'image']
           : ['text', 'asr'];
@@ -1099,8 +1638,14 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
         return Array.isArray(message) ? message.join('；') : String(message);
       }
     }
-    if (error instanceof Error && error.message) return error.message;
+    if (error instanceof Error && error.message) return this.normalizeStoredFailure(error.message);
     return '分析任务失败，请检查模型配置、视频可访问性或稍后重试。';
+  }
+
+  private normalizeStoredFailure(message: string): string {
+    if (/spawn\s+EFTYPE/i.test(message)) return this.ffmpegUnavailableMessage('EFTYPE');
+    if (/spawn\s+ENOENT/i.test(message)) return this.ffmpegUnavailableMessage('ENOENT');
+    return message;
   }
 
   private async persistJobs(): Promise<void> {
@@ -1112,7 +1657,35 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async cleanupExpiredRuntimeData(): Promise<void> {
-    this.logger.debug('Runtime cleanup tick completed.');
+    const root = this.runtimeRoot();
+    const ttlMs = this.envNumber('BVA_MEDIA_CACHE_TTL_HOURS', 24, 1, 24 * 30) * 60 * 60 * 1000;
+    const cutoff = Date.now() - ttlMs;
+    try {
+      await mkdir(root, { recursive: true });
+      const entries = await readdir(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const target = resolve(root, entry.name);
+        if (!this.isPathInside(root, target)) continue;
+        const targetStat = await stat(target);
+        if (targetStat.mtimeMs < cutoff) {
+          await rm(target, { recursive: true, force: true });
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Runtime cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async cleanupJobRuntimeData(jobId: string): Promise<void> {
+    const root = this.runtimeRoot();
+    const target = this.jobRuntimeDir(jobId);
+    if (!this.isPathInside(root, target)) return;
+    try {
+      await rm(target, { recursive: true, force: true });
+    } catch (error) {
+      this.logger.warn(`Runtime job cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private sleep(ms: number): Promise<void> {

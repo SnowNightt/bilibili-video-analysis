@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, StreamableFile } from '@nestjs/common';
+import { createReadStream } from 'node:fs';
 import { AnalysisService } from './analysis.service';
 
 @Controller('analysis')
@@ -28,6 +29,12 @@ export class AnalysisController {
   @Get('reports/:id')
   getReport(@Param('id') id: string) {
     return this.analysis.getReport(id);
+  }
+
+  @Get('assets/:jobId/:fileName')
+  async getAsset(@Param('jobId') jobId: string, @Param('fileName') fileName: string) {
+    const asset = await this.analysis.getRuntimeAsset(jobId, fileName);
+    return new StreamableFile(createReadStream(asset.filePath), { type: asset.mimeType });
   }
 
   @Post('reports/:id/questions')
