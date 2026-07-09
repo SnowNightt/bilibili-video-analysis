@@ -117,21 +117,30 @@ function submitModelDraft() {
     width="min(660px, calc(100vw - 40px))"
     :show-close="false"
     align-center
+    :close-on-click-modal="false"
     @update:model-value="handleModelModalUpdate"
   >
     <section aria-labelledby="model-title">
       <p class="eyebrow">MODEL PROFILE</p><h2 id="model-title">{{ state.editingModel ? '编辑模型配置' : '添加模型配置' }}</h2>
-      <form id="model-form" class="form-grid" @submit.prevent="submitModelDraft">
-        <label>配置名称<el-input v-model.trim="modelDraft.name" required /></label>
-        <label>
-          模型厂商
+      <el-form
+        id="model-form"
+        class="form-grid"
+        :model="modelDraft"
+        label-position="top"
+        @submit.prevent="submitModelDraft"
+      >
+        <el-form-item label="配置名称" prop="name">
+          <el-input v-model.trim="modelDraft.name" required />
+        </el-form-item>
+        <el-form-item label="模型厂商" prop="provider">
           <el-select v-model="modelDraft.provider" placeholder="请选择厂商" required>
             <el-option v-for="provider in MODEL_PROVIDERS" :key="provider" :label="provider" :value="provider" />
           </el-select>
-        </label>
-        <label class="full">API Base URL<el-input v-model.trim="modelDraft.baseUrl" type="url" required /></label>
-        <label class="full">
-          API Key
+        </el-form-item>
+        <el-form-item class="full" label="API Base URL" prop="baseUrl">
+          <el-input v-model.trim="modelDraft.baseUrl" type="url" required />
+        </el-form-item>
+        <el-form-item class="full" label="API Key" prop="apiKey">
           <el-input
             v-model="modelDraft.apiKey"
             type="password"
@@ -140,10 +149,11 @@ function submitModelDraft() {
             :placeholder="modelDraft.apiKeyConfigured ? '已配置；留空表示不更换' : '密钥只发送给本地后端'"
             show-password
           />
-        </label>
-        <label>模型名称<el-input v-model.trim="modelDraft.modelName" required /></label>
-        <label>
-          模型能力
+        </el-form-item>
+        <el-form-item label="模型名称" prop="modelName">
+          <el-input v-model.trim="modelDraft.modelName" required />
+        </el-form-item>
+        <el-form-item label="模型能力" prop="capability">
           <el-select v-model="modelDraft.capability" required>
             <el-option
               v-for="(label, capability) in CAPABILITY_LABELS"
@@ -152,11 +162,17 @@ function submitModelDraft() {
               :value="capability"
             />
           </el-select>
-        </label>
-        <label>请求超时（秒）<el-input-number v-model="modelDraft.timeoutSeconds" :min="10" :controls="false" required /></label>
-        <label>最大并发数<el-input-number v-model="modelDraft.maxConcurrency" :min="1" :max="20" :controls="false" required /></label>
-        <div class="checkbox-field"><el-checkbox v-model="modelDraft.isDefault">设为该能力的默认模型</el-checkbox></div>
-      </form>
+        </el-form-item>
+        <el-form-item label="请求超时（秒）" prop="timeoutSeconds">
+          <el-input-number v-model="modelDraft.timeoutSeconds" :min="10" :controls="false" required />
+        </el-form-item>
+        <el-form-item label="最大并发数" prop="maxConcurrency">
+          <el-input-number v-model="modelDraft.maxConcurrency" :min="1" :max="20" :controls="false" required />
+        </el-form-item>
+        <el-form-item class="checkbox-field" prop="isDefault">
+          <el-checkbox v-model="modelDraft.isDefault">设为该能力的默认模型</el-checkbox>
+        </el-form-item>
+      </el-form>
       <p class="credential-help">保存前会调用本地后端测试地址、密钥和模型可用性。前端不会持久化 API Key。</p>
       <div class="modal-actions">
         <el-button class="secondary-button" native-type="button" @click="closeModelModal">取消</el-button>
