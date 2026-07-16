@@ -1,0 +1,43 @@
+{
+  "name": "@bilibili-video-analysis/desktop",
+  "productName": "省流看",
+  "private": true,
+  "version": "0.1.0",
+  "description": "本地运行的 Bilibili 视频分析桌面工具",
+  "author": "省流看",
+  "main": "dist/main.js",
+  "config": {
+    "forge": "./forge.config.cjs"
+  },
+  "scripts": {
+    "build": "pnpm build:main && pnpm build:api && pnpm prepare:resources",
+    "build:main": "tsup src/main.ts src/preload.ts --format cjs --platform node --external electron --out-dir dist --clean",
+    "build:api": "tsup ../api/dist/utility.js --format cjs --platform node --out-dir dist/api --external class-transformer --external class-validator --external @nestjs/microservices --external @nestjs/websockets",
+    "prepare:resources": "node scripts/prepare-resources.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify-build.mjs",
+    "dev": "pnpm build && concurrently -k \"pnpm --dir ../web dev\" \"wait-on tcp:127.0.0.1:5173 && cross-env BVA_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "start": "electron .",
+    "package": "pnpm build && electron-forge package",
+    "make": "pnpm build && electron-forge make"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
+    "@types/node": "^24.12.3",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^43.1.1",
+    "electron-log": "^5.4.3",
+    "electron-squirrel-startup": "^1.0.1",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
+    "tsup": "^8.5.0",
+    "typescript": "~6.0.2",
+    "wait-on": "^9.0.3"
+  }
+}

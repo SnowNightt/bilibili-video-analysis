@@ -6,9 +6,10 @@ import { ModelConfigsController } from './model-configs/model-configs.controller
 import { ModelConfigsService } from './model-configs/model-configs.service';
 import { SecretsService } from './storage/secrets.service';
 import { StorageService } from './storage/storage.service';
+import { HealthController } from './health.controller';
 
 @Module({
-  controllers: [AnalysisController, ModelConfigsController],
+  controllers: [AnalysisController, ModelConfigsController, HealthController],
   providers: [
     AnalysisService,
     ModelConfigsService,

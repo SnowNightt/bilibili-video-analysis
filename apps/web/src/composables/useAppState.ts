@@ -11,9 +11,9 @@ import {
   askReportQuestion,
   cancelAnalysisJob,
   createAnalysisJob,
-  deleteStoredJob,
+  deleteAnalysisJob,
   fetchAnalysisReport,
-  listStoredJobs,
+  listAnalysisJobs,
   refreshAnalysisJob,
 } from '../services/analysisService'
 import {
@@ -52,6 +52,7 @@ const ACTIVE_JOB_STATUSES: JobStatus[] = [
 
 export function useAppState() {
   const state = reactive({
+    isDesktop: Boolean(window.desktop),
     currentView: 'new' as ViewName,
     sidebarOpen: false,
     bvidInput: '',
@@ -67,7 +68,7 @@ export function useAppState() {
     maxScreenshots: 12,
     selectedModelIds: {} as Partial<Record<ModelCapability, string>>,
     modelConfigs: listModelConfigs(),
-    jobs: listStoredJobs(),
+    jobs: [] as AnalysisJob[],
     currentJob: null as AnalysisJob | null,
     currentReport: null as AnalysisReport | null,
     conversation: [] as ConversationMessage[],
@@ -347,13 +348,20 @@ export function useAppState() {
     state.deletingJobId = id
   }
 
-  function deleteJob() {
+  async function deleteJob() {
     if (!state.deletingJobId) return
-    deleteStoredJob(state.deletingJobId)
-    state.jobs = state.jobs.filter((item) => item.id !== state.deletingJobId)
-    if (state.currentJob?.id === state.deletingJobId) state.currentJob = null
-    state.deletingJobId = null
-    notify('历史记录已删除。', 'success')
+    state.busy = true
+    try {
+      await deleteAnalysisJob(state.deletingJobId)
+      state.jobs = state.jobs.filter((item) => item.id !== state.deletingJobId)
+      if (state.currentJob?.id === state.deletingJobId) state.currentJob = null
+      state.deletingJobId = null
+      notify('历史记录已删除。', 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '历史记录删除失败。', 'warning')
+    } finally {
+      state.busy = false
+    }
   }
 
   function openModelEditor(model?: ModelConfig) {
@@ -415,7 +423,7 @@ export function useAppState() {
     }
   }
 
-  function exportCurrentReport() {
+  async function exportCurrentReport() {
     const report = state.currentReport
     if (!report) return
     const chapterText = report.chapters
@@ -453,18 +461,45 @@ export function useAppState() {
       '可信度提示',
       report.confidenceNotes,
     ].join('\n')
+    const fileName = `${report.video.title.replace(/[\\/:*?"<>|]/g, '_')}-分析报告.txt`
+    if (window.desktop) {
+      await window.desktop.saveText(fileName, content)
+      return
+    }
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${report.video.title}-分析报告.txt`
+    link.download = fileName
     link.click()
     URL.revokeObjectURL(url)
   }
 
-  function printCurrentReport() {
+  async function printCurrentReport() {
     if (!state.currentReport) return
+    if (window.desktop) {
+      const fileName = `${state.currentReport.video.title.replace(/[\\/:*?"<>|]/g, '_')}-分析报告.pdf`
+      await window.desktop.exportPdf(fileName)
+      return
+    }
     window.print()
+  }
+
+  async function openDesktopDirectory(kind: 'data' | 'cache' | 'logs') {
+    await window.desktop?.openDirectory(kind)
+  }
+
+  async function refreshJobs() {
+    try {
+      state.jobs = await listAnalysisJobs()
+      const active = state.jobs.find((job) => ACTIVE_JOB_STATUSES.includes(job.status))
+      if (active) {
+        state.currentJob = active
+        startPolling()
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '历史任务同步失败。', 'warning')
+    }
   }
 
   onScopeDispose(() => {
@@ -474,12 +509,7 @@ export function useAppState() {
 
   syncDefaultModels()
   void refreshModelConfigs()
-  const initialActiveJob = state.jobs.find((job) => ACTIVE_JOB_STATUSES.includes(job.status))
-  if (initialActiveJob) {
-    state.currentJob = initialActiveJob
-    startPolling()
-    void refreshCurrentJob()
-  }
+  void refreshJobs()
 
   return {
     state,
@@ -517,6 +547,7 @@ export function useAppState() {
     submitQuestion,
     exportCurrentReport,
     printCurrentReport,
+    openDesktopDirectory,
   }
 }
 

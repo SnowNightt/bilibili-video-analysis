@@ -19,6 +19,11 @@ const providers = computed(() => [...new Set(state.modelConfigs.map((model) => m
     <div class="security-notice">
       <strong>API Key 不写入前端存储</strong>
       <p>配置保存时只保留非敏感元数据；密钥应由本地后端写入操作系统凭据库。</p>
+      <div v-if="state.isDesktop" class="row-actions">
+        <el-button native-type="button" @click="app.openDesktopDirectory('data')">打开数据目录</el-button>
+        <el-button native-type="button" @click="app.openDesktopDirectory('cache')">打开缓存目录</el-button>
+        <el-button native-type="button" @click="app.openDesktopDirectory('logs')">打开日志目录</el-button>
+      </div>
     </div>
 
     <div v-if="state.modelConfigs.length" class="toolbar model-toolbar">

@@ -16,8 +16,10 @@
 ## 分析任务
 
 - `POST /api/analysis/jobs`：创建任务，请求体包含 `video` 和 `options`
+- `GET /api/analysis/jobs`：读取后端持久化的全部任务
 - `GET /api/analysis/jobs/:id`：读取任务最新状态
 - `POST /api/analysis/jobs/:id/cancel`：取消任务
+- `DELETE /api/analysis/jobs/:id`：删除任务、报告和持久截图
 - 响应结构：`AnalysisJob`
 
 ## 报告与追问

@@ -231,6 +231,10 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     return job;
   }
 
+  listJobs(): AnalysisJob[] {
+    return [...this.jobs.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
   getJob(id: string): AnalysisJob {
     const job = this.jobs.get(id);
     if (!job) throw new NotFoundException({ message: '任务不存在。' });
@@ -248,6 +252,18 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     await this.persistJobs();
     this.logger.log(`Analysis job cancelled: ${job.id}`);
     return job;
+  }
+
+  async deleteJob(id: string): Promise<void> {
+    const job = this.getJob(id);
+    this.jobs.delete(id);
+    if (job.reportId) this.reports.delete(job.reportId);
+    await Promise.all([
+      this.persistJobs(),
+      this.persistReports(),
+      this.cleanupJobRuntimeData(id),
+      this.cleanupJobReportAssets(id),
+    ]);
   }
 
   getReport(id: string): AnalysisReport {
@@ -1399,7 +1415,13 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
   }
 
   private jobFramesDir(jobId: string): string {
-    return resolve(this.jobRuntimeDir(jobId), 'frames');
+    return resolve(this.reportAssetsRoot(), jobId);
+  }
+
+  private reportAssetsRoot(): string {
+    const configured = process.env.BVA_REPORT_ASSETS_DIR?.trim();
+    if (!configured) return this.storage.dataPath('report-assets');
+    return isAbsolute(configured) ? resolve(configured) : resolve(process.cwd(), configured);
   }
 
   private jobVideosDir(jobId: string): string {
@@ -1686,6 +1708,13 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.warn(`Runtime job cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private async cleanupJobReportAssets(jobId: string): Promise<void> {
+    const root = this.reportAssetsRoot();
+    const target = resolve(root, jobId);
+    if (!this.isPathInside(root, target)) return;
+    await rm(target, { recursive: true, force: true });
   }
 
   private sleep(ms: number): Promise<void> {

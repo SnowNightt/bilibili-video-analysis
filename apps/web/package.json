@@ -9,6 +9,7 @@
     "preview": "vite preview --configLoader native"
   },
   "dependencies": {
+    "@bilibili-video-analysis/shared": "workspace:*",
     "element-plus": "^2.14.2",
     "vue": "^3.5.34"
   },

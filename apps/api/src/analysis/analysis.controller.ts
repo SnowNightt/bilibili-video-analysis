@@ -1,10 +1,15 @@
-import { Body, Controller, Get, Param, Post, StreamableFile } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, StreamableFile } from '@nestjs/common';
 import { createReadStream } from 'node:fs';
 import { AnalysisService } from './analysis.service';
 
 @Controller('analysis')
 export class AnalysisController {
   constructor(private readonly analysis: AnalysisService) {}
+
+  @Get('jobs')
+  listJobs() {
+    return this.analysis.listJobs();
+  }
 
   @Get('videos/:bvid')
   getVideoInfo(@Param('bvid') bvid: string) {
@@ -29,6 +34,12 @@ export class AnalysisController {
   @Get('reports/:id')
   getReport(@Param('id') id: string) {
     return this.analysis.getReport(id);
+  }
+
+  @Delete('jobs/:id')
+  async deleteJob(@Param('id') id: string) {
+    await this.analysis.deleteJob(id);
+    return { ok: true };
   }
 
   @Get('assets/:jobId/:fileName')

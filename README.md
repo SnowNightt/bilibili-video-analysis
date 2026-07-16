@@ -11,9 +11,9 @@ bilibili-video-analysis/
 ├─ apps/
 │  ├─ web/          Vue Web 前端
 │  ├─ api/          NestJS 本地后端
-│  └─ desktop/      Electron 桌面端预留目录
+│  └─ desktop/      Electron 桌面端
 ├─ packages/
-│  └─ shared/       共享类型和工具预留目录
+│  └─ shared/       前后端共享类型
 ├─ docs/
 │  └─ 
 ├─ package.json
@@ -74,6 +74,61 @@ pnpm build:web
 
 ```powershell
 pnpm preview
+```
+
+## Windows 桌面端
+
+桌面端使用 Electron 主进程管理窗口，通过 Utility Process 运行 NestJS。本地 API 使用随机端口并携带启动期令牌；Vue 渲染进程不启用 Node.js 集成。ffmpeg、Web 构建结果和 API bundle 会随桌面应用一起分发。
+
+开发运行：
+
+```powershell
+pnpm dev:desktop
+```
+
+构建桌面端资源：
+
+```powershell
+pnpm build:desktop
+```
+
+生成 Windows 安装器和便携 ZIP：
+
+```powershell
+pnpm make:desktop
+```
+
+正式发布时可设置以下环境变量：
+
+```env
+WINDOWS_CERTIFICATE_FILE=D:\Certificates\codesign.pfx
+WINDOWS_CERTIFICATE_PASSWORD=证书密码
+BVA_UPDATE_URL=https://example.com/releases/windows
+```
+
+前两项用于 Windows 代码签名，`BVA_UPDATE_URL` 用于 Squirrel 自动更新源。
+
+发布产物位于：
+
+```text
+apps/desktop/out/make/
+```
+
+桌面端数据目录：
+
+```text
+%APPDATA%/省流看/data             任务、报告和模型元数据
+%APPDATA%/省流看/report-assets    报告截图
+%APPDATA%/省流看/logs             运行日志
+%TEMP%/省流看/runtime             视频、音频和处理缓存
+```
+
+API Key 的桌面主密钥由 Electron `safeStorage` 使用 Windows DPAPI 保护。关闭应用时若存在运行任务，会先显示中断确认。
+
+运行完整构建和冒烟验证：
+
+```powershell
+pnpm test
 ```
 
 ## 后端接口

@@ -43,14 +43,17 @@ export class SecretsService {
 
   private async encryptionKey(): Promise<Buffer> {
     if (this.key) return this.key;
+    if (process.env.BVA_SECRET_KEY) {
+      this.key = Buffer.from(process.env.BVA_SECRET_KEY, 'base64');
+      return this.key;
+    }
     const filePath = this.storage.dataPath(this.keyFile);
     try {
       this.key = Buffer.from((await readFile(filePath, 'utf8')).trim(), 'base64');
       if (this.key.length === 32) return this.key;
     } catch {
-      // The key is created lazily on first use.
+      // Create a local development key below.
     }
-
     this.key = randomBytes(32);
     await this.storage.ensureDir(this.keyFile);
     await writeFile(filePath, this.key.toString('base64'), 'utf8');

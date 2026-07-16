@@ -14,12 +14,20 @@ _tmp_*
 .vite-cache
 **/.vite-cache
 .repo-git/
+.codex-run/
 dist
 **/dist
 dist-ssr
 **/dist-ssr
 *.local
 *.tsbuildinfo
+
+# Desktop generated resources and release artifacts
+apps/desktop/resources/
+apps/desktop/out/
+apps/desktop/assets/icon-*.png
+apps/desktop/assets/icon.png
+apps/desktop/assets/icon.ico
 
 # API local runtime files
 apps/api/data/
