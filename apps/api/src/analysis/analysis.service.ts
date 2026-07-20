@@ -110,8 +110,6 @@ interface ExtractiveReportDraft {
   overview: string;
   chapters: ReportChapter[];
   keyPoints: ReportPoint[];
-  facts: string[];
-  conclusion: string;
 }
 
 interface RankedSentence {
@@ -142,7 +140,10 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     const jobs = await this.storage.readJson<AnalysisJob[]>(this.jobsFile, []);
-    const reports = await this.storage.readJson<AnalysisReport[]>(this.reportsFile, []);
+    const reports = await this.storage.readJson<
+      Array<AnalysisReport & { conclusion?: unknown; facts?: unknown }>
+    >(this.reportsFile, []);
+    let reportsMigrated = false;
 
     for (const job of jobs) {
       if (ACTIVE_JOB_STATUSES.includes(job.status)) {
@@ -159,8 +160,16 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       }
       this.jobs.set(job.id, job);
     }
-    for (const report of reports) this.reports.set(report.id, report);
+    for (const report of reports) {
+      if ('conclusion' in report || 'facts' in report) {
+        delete report.conclusion;
+        delete report.facts;
+        reportsMigrated = true;
+      }
+      this.reports.set(report.id, report);
+    }
     await this.persistJobs();
+    if (reportsMigrated) await this.persistReports();
 
     this.cleanupTimer = setInterval(() => {
       void this.cleanupExpiredRuntimeData();
@@ -269,6 +278,82 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
   getReport(id: string): AnalysisReport {
     const report = this.reports.get(id);
     if (!report) throw new NotFoundException({ message: '报告不存在。' });
+    return report;
+  }
+
+  async repairReportScreenshots(id: string): Promise<AnalysisReport> {
+    const report = this.getReport(id);
+    if (!report.screenshots.length) return report;
+
+    const job = this.jobs.get(report.jobId);
+    if (!job) throw new BadRequestException({ message: '找不到原分析任务，无法重新提取截图。' });
+
+    const missing: Array<{ fileName: string; part: VideoPart; timestampSeconds: number }> = [];
+    for (const screenshot of report.screenshots) {
+      const match = screenshot.url.match(/^\/api\/analysis\/assets\/([^/]+)\/([^/?#]+)$/);
+      if (!match) continue;
+
+      let assetJobId: string;
+      let fileName: string;
+      try {
+        assetJobId = decodeURIComponent(match[1]);
+        fileName = decodeURIComponent(match[2]);
+      } catch {
+        throw new BadRequestException({ message: '历史截图地址格式无效，无法自动修复。' });
+      }
+      if (assetJobId !== job.id || !/^[A-Za-z0-9_.-]+$/.test(fileName)) {
+        throw new BadRequestException({ message: '历史截图地址与原分析任务不匹配。' });
+      }
+
+      const filePath = resolve(this.jobFramesDir(job.id), basename(fileName));
+      if (await this.isFile(filePath)) continue;
+
+      const page = Number(/^p(\d+)-/i.exec(fileName)?.[1]);
+      const part = job.video.parts.find((item) => item.page === page);
+      if (!part) throw new BadRequestException({ message: `找不到 P${page || '?'} 的视频信息，无法修复截图。` });
+      missing.push({ fileName, part, timestampSeconds: screenshot.timestampSeconds });
+    }
+
+    if (!missing.length) return report;
+    await mkdir(this.jobFramesDir(job.id), { recursive: true });
+    await mkdir(this.jobVideosDir(job.id), { recursive: true });
+
+    const pages = [...new Set(missing.map((item) => item.part.page))];
+    for (const page of pages) {
+      const items = missing.filter((item) => item.part.page === page);
+      const part = items[0].part;
+      const video = await this.downloadPartVideo(job, part);
+      try {
+        const partStart = this.partStartSeconds(job, part);
+        const lastUsableSecond = Math.max(part.duration - 0.5, 0);
+        for (const item of items) {
+          const localSeconds = Math.min(
+            lastUsableSecond,
+            Math.max(0, item.timestampSeconds - partStart),
+          );
+          await this.runFfmpeg(
+            [
+              '-y',
+              '-ss',
+              localSeconds.toFixed(2),
+              '-i',
+              video.filePath,
+              '-frames:v',
+              '1',
+              '-vf',
+              'scale=720:-2',
+              '-q:v',
+              '4',
+              join(this.jobFramesDir(job.id), item.fileName),
+            ],
+            `P${part.page} ${this.formatSeconds(item.timestampSeconds)} 历史截图修复失败`,
+          );
+        }
+      } finally {
+        await this.safeUnlink(video.filePath);
+      }
+    }
+
     return report;
   }
 
@@ -798,8 +883,8 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `内容上下文来源：${this.transcriptSourceLabel(transcriptSource)}`,
       `可用字幕或转写上下文：${transcript || '未读取到公开字幕。请只基于已提供元数据生成保守报告。'}`,
       `关键帧视觉证据：${this.visualEvidenceForPrompt(visualEvidence)}`,
-      '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters, keyPoints, facts 和 conclusion；如果“关键帧视觉证据”非空，必须用它补充画面、操作、屏幕文字和推荐截图说明；不要只复述标题、简介或分 P 信息。',
-      '请返回 JSON，字段必须包含 summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
+      '如果“可用字幕或转写上下文”非空，必须优先基于该上下文生成 summary, overview, chapters 和 keyPoints；如果“关键帧视觉证据”非空，必须用它补充画面、操作、屏幕文字和推荐截图说明；不要只复述标题、简介或分 P 信息。',
+      '请返回 JSON，字段必须包含 summary, overview, chapters, keyPoints, screenshots, recommendedSegments, confidenceNotes。',
       'chapters/recommendedSegments 的元素字段为 title, startSeconds, summary；keyPoints 元素字段为 title, detail；screenshots 元素字段为 url, timestampSeconds, description。screenshots 只能使用关键帧视觉证据中给出的 url；没有真实关键帧时返回 []。',
     ].join('\n\n');
   }
@@ -820,8 +905,8 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       `内容上下文：${this.compactTranscriptForPrompt(transcript, job.video.title) || '未读取到字幕或转写。'}`,
       `关键帧视觉证据：${this.visualEvidenceForPrompt(visualEvidence)}`,
       '请基于内容上下文和关键帧视觉证据做分析总结，不要复述整段转写。',
-      '只返回 JSON 对象，字段必须是：summary, overview, chapters, keyPoints, facts, conclusion, screenshots, recommendedSegments, confidenceNotes。',
-      'summary 为 1 句话；overview 为 1 段综合概览；chapters 和 recommendedSegments 最多 5 项，每项包含 title, startSeconds, summary；keyPoints 最多 6 项，每项包含 title, detail；facts 最多 8 条；screenshots 只能使用关键帧视觉证据中的真实 url；无真实截图时返回 []。',
+      '只返回 JSON 对象，字段必须是：summary, overview, chapters, keyPoints, screenshots, recommendedSegments, confidenceNotes。',
+      'summary 为 1 句话；overview 为 1 段综合概览；chapters 和 recommendedSegments 最多 5 项，每项包含 title, startSeconds, summary；keyPoints 最多 6 项，每项包含 title, detail；screenshots 只能使用关键帧视觉证据中的真实 url；无真实截图时返回 []。',
     ].join('\n\n');
   }
 
@@ -843,8 +928,6 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       overview: this.textOr(source.overview, fallback.overview),
       chapters: this.chaptersOr(source.chapters, fallback.chapters),
       keyPoints: this.pointsOr(source.keyPoints, fallback.keyPoints),
-      facts: this.stringArrayOr(source.facts, fallback.facts),
-      conclusion: this.textOr(source.conclusion, fallback.conclusion),
       screenshots: realScreenshots.length
         ? this.trustedScreenshotsOr(source.screenshots, realScreenshots)
         : this.screenshotsOr(source.screenshots, fallback.screenshots),
@@ -866,19 +949,9 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     const hasTranscript = Boolean(transcript.trim());
     const evidence = this.transcriptExcerpt(transcript);
     const sourceLabel = this.transcriptSourceLabel(transcriptSource);
-    const extracted = hasTranscript
-      ? this.extractReportFromTranscript(job, transcript, selectedParts.length ? selectedParts : job.video.parts)
-      : undefined;
+    const extracted = hasTranscript ? this.extractReportFromTranscript(job, transcript) : undefined;
     const chapters =
       extracted?.chapters.length ? extracted.chapters : this.fallbackChapters(selectedParts.length ? selectedParts : job.video.parts, job.options);
-    const metadataFacts = [
-      `UP 主：${job.video.ownerName}`,
-      `视频 BV 号：${job.video.bvid}`,
-      `视频总时长：${job.video.duration} 秒`,
-      `已选择分 P：${selectedParts.map((part) => `P${part.page} ${part.title}`).join('、')}`,
-      hasTranscript ? `内容上下文来源：${sourceLabel}，长度 ${transcript.length} 字符。` : '',
-      visualEvidence.length ? `关键帧视觉证据：${visualEvidence.length} 张。` : '',
-    ].filter(Boolean);
     const visualSummary = this.visualEvidenceSummary(visualEvidence);
     const fallbackOverview =
       evidence
@@ -911,14 +984,12 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
               detail: `本次选择了 ${job.options.selectedPartCids.length} 个分 P，分析深度为 ${job.options.depth}。`,
             },
           ],
-      facts: [...metadataFacts, ...(extracted?.facts ?? [])].slice(0, 12),
-      conclusion: extracted?.conclusion ?? '当前报告未从视频内容中提取到明确的作者结论或立场，请结合原视频核对。',
       screenshots: realScreenshots.length ? realScreenshots : this.fallbackScreenshots(job),
       recommendedSegments: chapters.slice(0, Math.min(3, chapters.length)),
       confidenceNotes: hasTranscript
         ? extracted
           ? this.withVisualEvidenceNote(
-              `文本模型没有返回可解析的结构化 JSON；系统已改用本地规则从${sourceLabel}中提炼摘要、要点和结论。报告可用于快速理解主题，但章节时间和细节仍需结合原视频核对。`,
+              `文本模型没有返回可解析的结构化 JSON；系统已改用本地规则从${sourceLabel}中提炼摘要和要点。报告可用于快速理解主题，但章节时间和细节仍需结合原视频核对。`,
               visualEvidence,
             )
           : this.withVisualEvidenceNote(
@@ -935,7 +1006,6 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
   private extractReportFromTranscript(
     job: AnalysisJob,
     transcript: string,
-    parts: VideoPart[],
   ): ExtractiveReportDraft | undefined {
     const sentences = this.transcriptSentences(transcript, job.video.title);
     if (!sentences.length) return undefined;
@@ -976,16 +1046,11 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
         summary: this.ensurePeriod(this.truncateText(item.text, 220)),
       }));
 
-    const facts = this.extractFactSentences(sentences, limits.facts);
-    const conclusion = this.extractConclusion(sentences, highlights, parts);
-
     return {
       summary,
       overview: this.ensurePeriod(overview),
       chapters,
       keyPoints,
-      facts,
-      conclusion,
     };
   }
 
@@ -1055,39 +1120,19 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       .sort((a, b) => b.score - a.score || a.index - b.index);
   }
 
-  private extractFactSentences(sentences: string[], limit: number): string[] {
-    const factPattern = /[0-9]|宣布|发布|推出|更新|确认|指出|显示|建议|停止|开放|上线|修复|升级|调查|故障|漏洞|模型|功能|服务/;
-    return this.uniqueTexts(sentences.filter((sentence) => factPattern.test(sentence)))
-      .slice(0, limit)
-      .map((sentence) => this.ensurePeriod(this.truncateText(sentence, 180)));
-  }
-
-  private extractConclusion(sentences: string[], highlights: string[], parts: VideoPart[]): string {
-    const conclusionPattern = /总体|最后|因此|所以|建议|需要|应当|值得|风险|影响|问题|结论|官方|用户/;
-    const candidate =
-      [...sentences].reverse().find((sentence) => conclusionPattern.test(sentence)) ??
-      highlights.at(-1) ??
-      sentences.at(-1);
-    if (candidate) {
-      return this.ensurePeriod(this.truncateText(`综合转写内容，视频结论可概括为：${candidate}`, 260));
-    }
-    return `本次选择了 ${parts.length} 个分 P，当前报告基于转写文本做保守总结，细节请结合原视频核对。`;
-  }
-
   private extractiveLimits(depth: string): {
     overviewSentences: number;
     overviewChars: number;
     keyPoints: number;
     chapters: number;
-    facts: number;
   } {
     if (depth === 'quick') {
-      return { overviewSentences: 3, overviewChars: 520, keyPoints: 4, chapters: 4, facts: 6 };
+      return { overviewSentences: 3, overviewChars: 520, keyPoints: 4, chapters: 4 };
     }
     if (depth === 'deep') {
-      return { overviewSentences: 7, overviewChars: 1100, keyPoints: 8, chapters: 8, facts: 10 };
+      return { overviewSentences: 7, overviewChars: 1100, keyPoints: 8, chapters: 8 };
     }
-    return { overviewSentences: 5, overviewChars: 780, keyPoints: 6, chapters: 6, facts: 8 };
+    return { overviewSentences: 5, overviewChars: 780, keyPoints: 6, chapters: 6 };
   }
 
   private uniqueRankedSentences(items: RankedSentence[]): RankedSentence[] {
@@ -1259,14 +1304,18 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
 
   private fallbackAnswer(report: AnalysisReport, question: string): string {
     if (/结论|总结|主要|summary/i.test(question)) {
-      return `${report.summary}\n\n${report.conclusion}`;
+      const points = report.keyPoints
+        .slice(0, 3)
+        .map((point) => `${point.title}：${point.detail}`)
+        .join('\n');
+      return [report.summary, report.overview, points].filter(Boolean).join('\n\n');
     }
     if (/章节|时间|片段|timestamp|chapter/i.test(question)) {
       return report.chapters
         .map((chapter) => `${chapter.startSeconds} 秒：${chapter.title} - ${chapter.summary}`)
         .join('\n');
     }
-    return `当前报告中可确认的信息是：${report.overview}\n\n如果你问到的细节没有出现在报告、章节或事实列表中，我无法从当前视频确认。`;
+    return `当前报告中可确认的信息是：${report.overview}\n\n如果你问到的细节没有出现在报告、章节或要点梳理中，我无法从当前视频确认。`;
   }
 
   private async imageDataUrl(filePath: string): Promise<string> {
@@ -1496,12 +1545,6 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
     return typeof value === 'string' && value.trim() ? value.trim() : fallback;
   }
 
-  private stringArrayOr(value: unknown, fallback: string[]): string[] {
-    if (!Array.isArray(value)) return fallback;
-    const result = value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean);
-    return result.length ? result : fallback;
-  }
-
   private chaptersOr(value: unknown, fallback: ReportChapter[]): ReportChapter[] {
     if (!Array.isArray(value)) return fallback;
     const result = value
@@ -1617,6 +1660,14 @@ export class AnalysisService implements OnModuleInit, OnModuleDestroy {
       return JSON.parse(text) as T;
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private async isFile(filePath: string): Promise<boolean> {
+    try {
+      return (await stat(filePath)).isFile();
+    } catch {
+      return false;
     }
   }
 

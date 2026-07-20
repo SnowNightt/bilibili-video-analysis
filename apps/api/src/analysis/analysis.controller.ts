@@ -36,6 +36,11 @@ export class AnalysisController {
     return this.analysis.getReport(id);
   }
 
+  @Post('reports/:id/screenshots/repair')
+  async repairReportScreenshots(@Param('id') id: string) {
+    return this.analysis.repairReportScreenshots(id);
+  }
+
   @Delete('jobs/:id')
   async deleteJob(@Param('id') id: string) {
     await this.analysis.deleteJob(id);

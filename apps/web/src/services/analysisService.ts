@@ -29,8 +29,7 @@ export function cancelAnalysisJob(id: string): Promise<AnalysisJob> {
   })
 }
 
-export async function fetchAnalysisReport(reportId: string): Promise<AnalysisReport> {
-  const report = await requestJson<AnalysisReport>(`/api/analysis/reports/${encodeURIComponent(reportId)}`)
+function resolveReportAssetUrls(report: AnalysisReport): AnalysisReport {
   return {
     ...report,
     screenshots: report.screenshots.map((screenshot) => ({
@@ -38,6 +37,19 @@ export async function fetchAnalysisReport(reportId: string): Promise<AnalysisRep
       url: resolveApiAssetUrl(screenshot.url),
     })),
   }
+}
+
+export async function fetchAnalysisReport(reportId: string): Promise<AnalysisReport> {
+  const report = await requestJson<AnalysisReport>(`/api/analysis/reports/${encodeURIComponent(reportId)}`)
+  return resolveReportAssetUrls(report)
+}
+
+export async function repairAnalysisReportScreenshots(reportId: string): Promise<AnalysisReport> {
+  const report = await requestJson<AnalysisReport>(
+    `/api/analysis/reports/${encodeURIComponent(reportId)}/screenshots/repair`,
+    { method: 'POST' },
+  )
+  return resolveReportAssetUrls(report)
 }
 
 export function askReportQuestion(reportId: string, question: string): Promise<ConversationMessage> {

@@ -14,6 +14,7 @@ import {
   deleteAnalysisJob,
   fetchAnalysisReport,
   listAnalysisJobs,
+  repairAnalysisReportScreenshots,
   refreshAnalysisJob,
 } from '../services/analysisService'
 import {
@@ -449,7 +450,7 @@ export function useAppState() {
       '章节时间线',
       chapterText,
       '',
-      '核心观点',
+      '要点梳理',
       pointsText,
       '',
       '关键截图',
@@ -483,6 +484,22 @@ export function useAppState() {
       return
     }
     window.print()
+  }
+
+  async function repairCurrentReportScreenshots(): Promise<boolean> {
+    const report = state.currentReport
+    if (!report) return false
+    state.busy = true
+    try {
+      state.currentReport = await repairAnalysisReportScreenshots(report.id)
+      notify('历史截图已重新提取。', 'success')
+      return true
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '历史截图修复失败。', 'warning')
+      return false
+    } finally {
+      state.busy = false
+    }
   }
 
   async function openDesktopDirectory(kind: 'data' | 'cache' | 'logs') {
@@ -545,6 +562,7 @@ export function useAppState() {
     removeModel,
     refreshModelConfigs,
     submitQuestion,
+    repairCurrentReportScreenshots,
     exportCurrentReport,
     printCurrentReport,
     openDesktopDirectory,

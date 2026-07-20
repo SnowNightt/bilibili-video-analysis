@@ -119,8 +119,6 @@ export interface AnalysisReport {
   overview: string
   chapters: ReportChapter[]
   keyPoints: ReportPoint[]
-  facts: string[]
-  conclusion: string
   screenshots: ReportScreenshot[]
   recommendedSegments: ReportChapter[]
   confidenceNotes: string
